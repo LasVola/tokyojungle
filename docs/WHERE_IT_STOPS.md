@@ -483,3 +483,49 @@ so the render path can be worked on without waiting for audio. With it, the boot
 thread unblocks and runs a real loop, but the title still opens only the two
 sound banks and never loads a graphics asset -- so audio is genuinely the gate,
 not a parallel dead end.
+
+### Mechanism found: the module I/O counts are answered BY THE SPU
+
+`func_00201D38` fills the module descriptor by calling the module class entry
+repeatedly with a QUERY ID in r5, storing each result in a successive field:
+
+    r5=2 -> module+0x1C   r5=3 -> +0x20   r5=4 -> +0x24
+    r5=5 -> module+0x28 (input bus count)
+    r5=6 -> module+0x2C (output bus count)
+
+For DSP modules that entry is `func_002065E4`, a bounds-checked jump table
+(`if (r5 > 8) return;` then `target = table[r5*4] + base`). The table resolves
+correctly -- read from the ELF at `[TOC+0x1880] = 0x00206614`:
+
+    table[5] = +196 -> 0x002066D8   (query 5)
+    table[6] = +160 -> 0x002066B4   (query 6)
+
+Both are lifted cases and a probe on the `default:` records zero misses, so
+dispatch is fine. Each handler tail-calls
+
+    func_002065D8([sgxobj+0x70], desc, 0, 0x105 / 0x106)
+
+and `[sgxobj+0x70]` measures as **0x0292E900 -- the SPURS audio job chain**
+(`[+0x74]` is the audio buffer 0x029338E0). So the PPU asks the **SPU** how many
+buses a DSP module has, by submitting a job, and reads the answer out of the
+completion event.
+
+That is the same `jc_signal_done` path in libs/spurs/cellSpurs.c whose own
+comment says a synthetic payload "means the caller reads back zero for whatever
+it asked" -- it computes the SPU's outbound mailbox into `d2`/`d3` and then
+pushes a hardcoded 0. Confirmed experimentally: setting `SPURS_EVENT_D3=<n>`
+changes the failure (`sgxbus.c(1641)` becomes `sgxbus.c(934)`), so **data3 is
+the answer channel**.
+
+**Attempted and REVERTED**: wiring `g_spurs_job_mbox` into the event.
+- Putting it in **data2 corrupts memory** -- the audio consumer treats data2 as
+  a job index (`(data2 << 7) + 0x2B8` into the chain, then dereferenced), and
+  the `[TOC+0x1860]` SGX pointer came back `0xFFFF0000`.
+- With data2 left 0 and only data3 carrying it, some runs got further (no
+  sgxbus error, reaching `cellSaveDataAutoLoad2` + trophy setup) but others
+  still corrupted, and no run ever produced a draw or advanced the SGX tick.
+
+The mailbox holds LS addresses (0x400, 0x2000, 0x14860, …), not query answers,
+so feeding it back is wrong. A correct fix needs the SPU side to actually
+service commands **0x105/0x106** and post the real count. That is the next
+piece of work, and it is SPU-side, not PPU-side.
