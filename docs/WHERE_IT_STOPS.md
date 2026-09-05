@@ -58,6 +58,48 @@ with `arg=0x24F4520`, and `0x024F47D8` is 0x2B8 into that same structure.
 - **The game clock.** `gameclock[0x00C04A68]` is 0 and never advances, but that
   is a *consequence*: the main thread that would advance it is asleep.
 
+## Narrowed further, same day — it is a missing COMPLETION, not a missing signal
+
+Four measurements, in order:
+
+**1. Only one function can release the main thread.** `func_002369EC` is the
+sole code in the binary that both decrements the counter and signals the
+condvar:
+
+```c
+r9 = vm_read32(r31 + 0x278);   /* the counter          */
+vm_write32(r31 + 0x278, r9);   /* decremented, stored  */
+r3 = r31 + 0x27C;              /* ...then signal this  */
+```
+
+**2. It is never invoked.** It is reachable only as a tail call from
+`func_002369C0` (the lifter emits `g_trampoline_fn = func_002369EC; return;`).
+`func_002369C0` has no direct callers; it is address-taken through an OPD at
+guest `0x00350530`. `PS3_CALLTRACE_TO=0x002369C0` reports **zero calls** in a
+45-second run — with the trace verified working (80 lines with the filter off).
+
+**3. It is not a lost wakeup.** `PS3_COND_SPURIOUS_MS=200` turns the infinite
+wait into a 200 ms one, so the main thread re-tests its predicate five times a
+second. **It is still stuck after 60 s** — 27 STUCK reports. A spurious wakeup
+is legal for a condvar, so this cannot invent progress; the fact that it does
+not help proves the predicate is *genuinely unsatisfied*. The counter really is
+still positive, and no signal would have helped.
+
+**4. The trampoline is not being dropped.** The runtime drains `g_trampoline_fn`
+on the indirect-call path and in every guest-call entry point, so the tail call
+would run if the parent ran. The parent does not run.
+
+So the chain is intact and simply never entered. What is missing is whatever
+should *invoke* `func_002369C0`.
+
+### The one lead into it
+
+`func_002369C0`'s descriptor (`0x00350530`) is referenced exactly once in the
+whole image, as data at guest **`0x0035B6B8`**, in a table whose neighbours are
+plain code addresses (`0x002A1210`, `0x002A1240`, `0x002A1250`, …) rather than
+descriptors. Mixed entry kinds mean this is probably not a vtable. Identifying
+that table, and who reads it, is the next step.
+
 ## What to chase next
 
 Find the producer that should increment `[0x024F47D8+0x278]` and signal cond 3.
