@@ -638,3 +638,46 @@ What a next attempt should establish FIRST, before writing any code:
 2. whether `cellSpursJobGuardNotify`'s return value participates -- the audio
    loop calls it immediately before each receive at `loc_0020F108` and branches
    on it, and our HLE always returns 0.
+
+### Correction again, and a second bug behind the first
+
+Two things were wrong in the section above and are now settled by measurement.
+
+**1. `job_desc+0x6C` is NOT the blocker.** Reading the loop-back block
+`loc_0020F1F0`, which every iteration passes through:
+
+    r0 = r30 + 1;                    /* r30 = data2 from the event = job index */
+    r9 = vm_read32(r28 + 0x4284);    /* number of jobs */
+    if (r0 < r9) goto loc_0020F108;  /* more to come -> wait again */
+    r31 = vm_read32(r1 + 0xBC);      /* THE ANSWER: data3, low half */
+
+Measured: `data2=0`, `jobcount=1`, so `1 < 1` is false and the block **exits**
+every time. `func_0020EFD0` is therefore *called* ~19,757 times, not spinning --
+each call receives one completion and returns the answer read from data3. The
+`[entry+0x34] == 0` branch is an ordinary "this slot has no handler" skip, not a
+wall. That kills the descriptor-write-back theory entirely.
+
+So the query genuinely does return whatever we put in data3, and we put 0.
+
+**2. Answering the query exposes a second, independent bug.** With
+`SPURS_EVENT_D3=1` (or 2, or the real mailbox -- all behave the same, so the
+value is not the issue) the title proceeds and then destroys itself:
+
+    [TJBAD] memcpy INTO TOC/OPD: dst=0x00340000 src=0x053000A0 len=65536 lr=0x0023F1D0
+    [TJBAD] memcpy INTO TOC/OPD: dst=0x00350000 src=0x053000A0 len=65536 lr=0x0023F1D0
+
+`func_0023F3F4` is memcpy; `func_0023F09C` (its caller at 0x0023F1D0) is an
+**fread** -- it copies out of the stdio buffer at 0x053000A0 into a destination
+pointer `r27` that ADVANCES through the copy loop. Two consecutive 64 KB chunks
+land on 0x00340000 (the import/OPD table) and 0x00350000 (the TOC), which is
+what makes `[TOC+0x1860]` read 0xFFFF0000 afterwards.
+
+The destination is not bad at entry -- a probe on `func_0023F09C` for a
+destination inside the image never fires -- so a large read is overrunning its
+buffer rather than starting in the wrong place. This is on a code path the
+title only reaches once audio init succeeds, which is why it has never been
+seen before.
+
+That is the next thing to chase: which read, and why its destination walks into
+the image. It is independent of the SPURS work and probably an allocator or a
+size/count mismatch.
