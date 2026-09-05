@@ -23,6 +23,7 @@ extern "C" {
     void cellAudioPortClose(void);
     void cellAudioPortStart(void);
     void cellAudioPortStop(void);
+    void cellAudioCreateNotifyEventQueue(void);
     void cellAudioSetNotifyEventQueue(void);
     void cellAudioRemoveNotifyEventQueue(void);
     void cellAudioGetPortConfig(void);
@@ -649,10 +650,12 @@ extern "C" {
     void _cellSpursJobChainAttributeInitialize(void);
     void cellSpursJobChainAttributeSetName(void);
     void cellSpursCreateJobChainWithAttribute(void);
+    void cellSpursCreateJobChain(void);
     void cellSpursJobGuardInitialize(void);
     void cellSpursJobGuardNotify(void);
     void cellSpursJobGuardReset(void);
     void cellSpursRunJobChain(void);
+    void cellSpursShutdownJobChain(void);
     void cellSpursJoinJobChain(void);
     void cellSpursJobChainGetError(void);
     void cellSpursKickJobChain(void);
@@ -1063,6 +1066,7 @@ extern "C" void ppu_hle_register_all(void) {
     ps3_hle_register(0x4129FE2Du, "cellAudioPortClose", (void*)cellAudioPortClose);
     ps3_hle_register(0x89BE28F2u, "cellAudioPortStart", (void*)cellAudioPortStart);
     ps3_hle_register(0x5B1E2C73u, "cellAudioPortStop", (void*)cellAudioPortStop);
+    ps3_hle_register(0x04AF134Eu, "cellAudioCreateNotifyEventQueue", (void*)cellAudioCreateNotifyEventQueue);
     ps3_hle_register(0x377E0CD9u, "cellAudioSetNotifyEventQueue", (void*)cellAudioSetNotifyEventQueue);
     ps3_hle_register(0xFF3626FDu, "cellAudioRemoveNotifyEventQueue", (void*)cellAudioRemoveNotifyEventQueue);
     ps3_hle_register(0x74A66AF0u, "cellAudioGetPortConfig", (void*)cellAudioGetPortConfig);
@@ -1689,10 +1693,12 @@ extern "C" void ppu_hle_register_all(void) {
     ps3_hle_register(0x3548F483u, "_cellSpursJobChainAttributeInitialize", (void*)_cellSpursJobChainAttributeInitialize);
     ps3_hle_register(0x9FEF70C2u, "cellSpursJobChainAttributeSetName", (void*)cellSpursJobChainAttributeSetName);
     ps3_hle_register(0x303C19CDu, "cellSpursCreateJobChainWithAttribute", (void*)cellSpursCreateJobChainWithAttribute);
+    ps3_hle_register(0x60EB2DECu, "cellSpursCreateJobChain", (void*)cellSpursCreateJobChain);
     ps3_hle_register(0x68AAEBA9u, "cellSpursJobGuardInitialize", (void*)cellSpursJobGuardInitialize);
     ps3_hle_register(0xD5D0B256u, "cellSpursJobGuardNotify", (void*)cellSpursJobGuardNotify);
     ps3_hle_register(0x00AF2519u, "cellSpursJobGuardReset", (void*)cellSpursJobGuardReset);
     ps3_hle_register(0xF31731BBu, "cellSpursRunJobChain", (void*)cellSpursRunJobChain);
+    ps3_hle_register(0x738E40E6u, "cellSpursShutdownJobChain", (void*)cellSpursShutdownJobChain);
     ps3_hle_register(0xA7C066DEu, "cellSpursJoinJobChain", (void*)cellSpursJoinJobChain);
     ps3_hle_register(0x161DA6A7u, "cellSpursJobChainGetError", (void*)cellSpursJobChainGetError);
     ps3_hle_register(0xBFEA60FAu, "cellSpursKickJobChain", (void*)cellSpursKickJobChain);

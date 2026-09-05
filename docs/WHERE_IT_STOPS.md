@@ -122,3 +122,80 @@ the title does, not just how fast.
 Built against **ps3recomp master** (not the shared working tree) — 156 objects,
 links clean, and the NID table must be regenerated from the same tree the
 runtime library is built from.
+
+---
+
+# Update — the deadlock is fixed; the wall is now the game clock
+
+Four bugs fixed, in the order each exposed the next. The title went from
+**finished tearing itself down** to **running its main loop**.
+
+## 1. The condvar deadlock — root cause
+
+`/dev_hdd0` was not mapped to anything real, so the file request **failed**, so
+its completion callback never ran, so the counter never decremented. Measured
+with `PS3_COND_PEEK`, not inferred:
+
+```
+[PEEK] [0x024F4A50]=1  at cond_wait(cond=3)    one request outstanding
+[PEEK] [0x024F4A50]=0  after the mapping fix   reached zero
+```
+
+The fix is host-side, not code: `/dev_hdd0/game/NPUA80523/USRDIR` must resolve
+to the real `input/USRDIR`. A junction does it:
+
+```powershell
+New-Item -ItemType Junction `
+  -Path   input\gamedata\dev_hdd0\game\NPUA80523\USRDIR `
+  -Target input\USRDIR
+```
+
+## 2-4. Three runtime bugs behind it
+
+- **`cellSpursShutdownJobChain` unimplemented** — returned whatever was in `r3`,
+  so the caller read garbage for "did the shutdown take?"
+- **SPURS queue cancellation was global** — `cellSpursFinalize` cancelled *every*
+  attached queue. This title runs one SPURS for its data install and a second
+  for audio; finalising the first killed the second's, which the title read as
+  the SPU going silent (69 x `failed to recv data from SPU`).
+- **`cellSail` player handles** — thirteen entry points validated a
+  `CellSailPlayer*` **guest pointer** as an index (`handle >= CELL_SAIL_PLAYER_MAX`),
+  which rejects every real call. `SetSoundAdapter` failing is what made the title
+  close a resource it never opened, terminate its SGX sound system and block in
+  `sys_ppu_thread_join` forever.
+
+| | before | after |
+|---|---|---|
+| log | frozen at 1,297 lines | 5,755 and growing |
+| SPU recv errors | 69 | 0 |
+| queues cancelled | 2 | 0 |
+| `SGX system terminate` | 1 | 0 |
+| `sys_ppu_thread_join` parked | yes | 0 |
+
+## Where it stops now
+
+The main thread sits in `sys_timer_usleep` (syscall 141) in a poll loop, and
+**the game clock never advances**:
+
+```
+gameclock[0x00C04A68]=0   vb+0x0=1  vb+0x8=0  vb+0x14=2942 (climbing)
+```
+
+The vblank object ticks correctly and the guest's own vblank callback
+(`func_001F2F30`) runs every frame — verified against the disassembly, the lift
+is faithful — but `[0x00C04A68]` is written exactly twice in a run, both zeros,
+from init paths. Nothing advances it, and the main loop waits for it.
+
+**Three functions write `+0x18` of the object at `[TOC+0x1860]`** (i.e. the
+clock) and are the candidates for the missing producer:
+
+| function | reachability |
+|---|---|
+| `func_0020677C` | **0 direct callers**, appears once in the image |
+| `func_00207BD8` | 1 direct caller |
+| `func_0020A958` | 1 direct caller — `func_0020B20C`; also calls a cond-signal wrapper, so it looks like the producer |
+
+Next step is to establish whether `func_0020B20C`'s chain is entered at all.
+Note draws/flips are still 2/8, so no geometry, and there are 41 unhandled
+`[RSX] unknown method` entries (`0x1D88`, `0x1800`, `0x0398`, `0x0394`, `0x01B8`,
+`0x01B4`) — but those are downstream of a main loop that is not yet ticking.

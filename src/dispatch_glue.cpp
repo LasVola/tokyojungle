@@ -238,9 +238,11 @@ static DWORD WINAPI tj_watchdog_thread(LPVOID)
              * all, or just this one field stuck. */
             uint32_t vb = vm_read32(0x00359220u + 0x154Cu);
             if (obj) snprintf(timebuf, sizeof timebuf,
-                              " gameclock[0x%08X]=%llu vbobj=0x%08X vb+0x14=%u",
+                              " gameclock[0x%08X]=%llu vbobj=0x%08X vb+0x0=%u vb+0x8=%u vb+0x14=%u",
                               obj + 0x18, (unsigned long long)vm_read64(obj + 0x18),
-                              vb, vb ? vm_read32(vb + 0x14) : 0);
+                              vb, vb ? vm_read32(vb + 0x0) : 0,
+                              vb ? vm_read32(vb + 0x8) : 0,
+                              vb ? vm_read32(vb + 0x14) : 0);
             else     snprintf(timebuf, sizeof timebuf, " gameclock=<obj null>");
         }
 
