@@ -748,3 +748,38 @@ SPU binaries actually compute for commands 0x105/0x106, or reading the answer
 off real hardware. Guessing has now been tried five times and produced five
 retractions; the next attempt should start from an oracle (an RPCS3 trace of
 this title's audio bring-up) rather than from inference.
+
+### The oracle is not available yet: RPCS3 gets LESS far than we do
+
+The recommendation above was to settle the correct bus-count answer against real
+hardware behaviour rather than by inference. RPCS3 is installed
+(D:/recomp/tools/rpcs3, portable layout, firmware present) so this was tried.
+
+Booting the title's ELF works once the title id is mapped -- RPCS3 maps an ELF's
+parent as /dev_hdd0/game/<its own dir>/, so it must be reached through
+dev_hdd0/game/NPUA80523:
+
+    mklink /J D:\recomp\tools\rpcs3\dev_hdd0\game\NPUA80523 ^
+              G:\recomp\ps3games\tokyojungle\input
+
+(That junction was created for this experiment and REMOVED afterwards; recreate
+it with the line above.)
+
+With the mapping right, RPCS3 runs the title but its TTY produces only the boot
+line -- no `=== SGX system initialize ===`, which our recomp does reach. The log
+says why:
+
+    sys_fs_stat failed with CELL_ENOENT
+        "/dev_hdd0/game/NPUA80523/USRDIR/data/tj.edat"   (JNP::NPDRMOpenThread)
+    cellSaveDataAutoLoad2 failed with 0x8002b401 CELL_SAVEDATA_ERROR_CBRESULT
+
+**`tj.edat` does not exist anywhere in the extraction.** `input/USRDIR` holds
+2.4 GB against a 2.577 GB source package (which is present, alongside the
+title's .rap), so roughly 170 MB is missing -- consistent with an extractor that
+decrypted the EDATs to plain files and dropped the .edat wrappers. Our runtime
+stubs the NPDRM path so it never notices; RPCS3 does not, and stops there.
+
+So the oracle route needs the package extracted properly (with the .rap) before
+RPCS3 can be used to answer what the DSP bus counts should be. That is a
+prerequisite for the next attempt, not an optional extra -- inference has a 0/6
+record on this blocker.
