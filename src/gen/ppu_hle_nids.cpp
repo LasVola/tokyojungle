@@ -576,6 +576,8 @@ extern "C" {
     void cellSailDescriptorGetUri(void);
     void cellSailPlayerInitialize2(void);
     void cellSailSoundAdapterInitialize(void);
+    void cellSailGraphicsAdapterInitialize(void);
+    void cellSailGraphicsAdapterSetPreferredFormat(void);
     void cellSailMemAllocatorInitialize(void);
     void cellSaveDataListSave2(void);
     void cellSaveDataListLoad2(void);
@@ -1619,6 +1621,8 @@ extern "C" void ppu_hle_register_all(void) {
     ps3_hle_register(0x4C191088u, "cellSailDescriptorGetUri", (void*)cellSailDescriptorGetUri);
     ps3_hle_register(0x23654375u, "cellSailPlayerInitialize2", (void*)cellSailPlayerInitialize2);
     ps3_hle_register(0x3D0D3B72u, "cellSailSoundAdapterInitialize", (void*)cellSailSoundAdapterInitialize);
+    ps3_hle_register(0x1C983864u, "cellSailGraphicsAdapterInitialize", (void*)cellSailGraphicsAdapterInitialize);
+    ps3_hle_register(0x2E3CCB5Eu, "cellSailGraphicsAdapterSetPreferredFormat", (void*)cellSailGraphicsAdapterSetPreferredFormat);
     ps3_hle_register(0x346EBBA3u, "cellSailMemAllocatorInitialize", (void*)cellSailMemAllocatorInitialize);
     ps3_hle_register(0x2DE0D663u, "cellSaveDataListSave2", (void*)cellSaveDataListSave2);
     ps3_hle_register(0x1DFBFDD6u, "cellSaveDataListLoad2", (void*)cellSaveDataListLoad2);
