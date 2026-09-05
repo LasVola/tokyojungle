@@ -180,6 +180,24 @@ static uint32_t tj_resolve_rip(uintptr_t rip, uintptr_t* out_offset)
     return best_guest;
 }
 
+/* TJ_CLOCK_TICK=<ms>: advance the SGX audio tick at [[TOC+0x1860]+0x18].
+ * The boot wait in func_002139CC spins until that counter passes 3, and it only
+ * advances when the audio thread completes a lap -- which it cannot while the
+ * audio graph has one bus instead of four (see docs/WHERE_IT_STOPS.md). Ticking
+ * it from outside lets the RENDER path be worked on independently of the audio
+ * bring-up. Diagnostic only: it fakes time the title has not actually spent. */
+static DWORD WINAPI tj_clock_tick_thread(LPVOID)
+{
+    const char* e = getenv("TJ_CLOCK_TICK");
+    unsigned ms = (e && *e) ? (unsigned)strtoul(e, nullptr, 0) : 0;
+    if (!ms) ms = 16;
+    for (;;) {
+        uint32_t obj = vm_read32(0x00359220u + 0x1860u);
+        if (obj) { uint64_t t = vm_read64(obj + 0x18); vm_write64(obj + 0x18, t + 1); }
+        Sleep(ms);
+    }
+}
+
 static DWORD WINAPI tj_watchdog_thread(LPVOID)
 {
     int sample = 0;
@@ -275,6 +293,10 @@ extern "C" void tj_install_watchdog(ppu_context* ctx)
                     GetCurrentProcess(), &real, 0, FALSE,
                     DUPLICATE_SAME_ACCESS);
     g_watchdog_main_thread = real;
+    if (getenv("TJ_CLOCK_TICK")) {
+        CreateThread(NULL, 0, tj_clock_tick_thread, NULL, 0, NULL);
+        fprintf(stderr, "[TJ] SGX clock ticker armed (diagnostic)\n");
+    }
     HANDLE h = CreateThread(NULL, 0, tj_watchdog_thread, NULL, 0, NULL);
     if (h) CloseHandle(h);
     fprintf(stderr, "[TJ] Watchdog installed (main thread=%p)\n", real);

@@ -424,3 +424,62 @@ Next step for whoever picks this up: work out what resource type `0x3E` is and
 why querying it over a four-bus `tj_bus.sgd` returns 1. `func_002012E0`'s second
 call passes an extra stack pointer (`r5`), so comparing the two calls is
 probably the fastest way in.
+
+### Root of the audio failure: every DSP module declares zero I/O buses
+
+Tracing the `out of range bus (1,1)` check to its operands (probe at the error
+label, not between the `if` and its `goto` -- an earlier probe placed there made
+the branch unconditional and had to be redone):
+
+    [TJCHK] r7=1 r28=0x0297FDE0 [r28+0x28]=0 [r28+0x2C]=0
+            r22=0xD00FF6BC [r22+0x48]=1 [r22+0x5C]=0
+
+`r28` is the **module** object (`0x0297FDE0` is exactly `tverb`'s allocation),
+not the bus table -- the bounds are the module's own input/output bus counts at
+`+0x28`/`+0x2C`, and both are 0. Dumping all eleven registered modules:
+
+    user    @0x0297EBA0 +0x28=4 +0x2C=4
+    dmix    @0x0297ECA0 +0x28=0 +0x2C=0
+    thru    @0x0297F160 +0x28=0 +0x2C=0
+    amp     @0x0297F1C0 +0x28=0 +0x2C=0
+    filter  @0x0297F3A0 +0x28=0 +0x2C=0
+    comp    @0x0297F620 +0x28=0 +0x2C=0
+    lverb   @0x0297F7C0 +0x28=0 +0x2C=0
+    delay   @0x0297F890 +0x28=0 +0x2C=0
+    umix    @0x0297FA00 +0x28=0 +0x2C=0
+    lverbx  @0x0297FD10 +0x28=0 +0x2C=0
+    tverb   @0x0297FDE0 +0x28=0 +0x2C=0
+
+So this is **systematic across every SPU DSP module**, not a `tverb` quirk.
+`user` is the only one with real counts, and it is registered through a
+different class (`func_001FEDF4`) than the DSP modules (`func_002065E4`).
+
+A write-watch over a module descriptor shows those two words are only ever
+ZEROED -- once by the memset and once by `func_00201D38` through an indirect
+memcpy (`func_01180600`, a PRX-region helper). Nothing ever populates them.
+
+Ruled out along the way:
+
+- not the `.sgd` data -- both banks load and verify (`SGXD`, full length);
+- not the module SPU binaries -- their heads are raw SPU code, no metadata
+  fields at those offsets;
+- not a lifter jump-table gap -- the DSP module handler `func_002065E4` is a
+  9-case jump-table dispatcher and a probe on its `default:` records **zero**
+  misses.
+
+Two failure texts alternate run to run (`sgxbus.c(934) : failed to regist
+module` vs `sgxbus.c(1641) : out of range bus`) but the run never succeeds: 6/6
+sampled runs fail, so treat them as two surfacings of this one root, not a race
+that can be won.
+
+**The question to answer next:** where is a DSP module's input/output bus count
+supposed to come from? `func_002065E4` (the DSP module class entry) receives
+commands through its jump table; one of those commands, or the `func_00201D38`
+copy source, should carry the I/O counts. Finding the producer of `user`'s 4/4
+via `func_001FEDF4` and comparing is probably the fastest route in.
+
+`TJ_CLOCK_TICK=<ms>` (added to src/dispatch_glue.cpp) fakes the SGX audio tick
+so the render path can be worked on without waiting for audio. With it, the boot
+thread unblocks and runs a real loop, but the title still opens only the two
+sound banks and never loads a graphics asset -- so audio is genuinely the gate,
+not a parallel dead end.
