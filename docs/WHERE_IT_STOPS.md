@@ -199,3 +199,67 @@ Next step is to establish whether `func_0020B20C`'s chain is entered at all.
 Note draws/flips are still 2/8, so no geometry, and there are 41 unhandled
 `[RSX] unknown method` entries (`0x1D88`, `0x1800`, `0x0398`, `0x0394`, `0x01B8`,
 `0x01B4`) — but those are downstream of a main loop that is not yet ticking.
+
+---
+
+# The full chain, measured end to end
+
+Traced by instrumenting every branch target and every call site along the path,
+rebuilding between each step. Each link below was observed, not inferred.
+
+```
+main thread            sys_timer_usleep, polling the game clock at 0x00C04A68
+   waits on            -> never advances (written twice per run, both zeros)
+
+the clock is written by func_0020A958
+   reached from        func_0020E8E0 -> func_0020E93C -> func_0020B4A8 -> func_0020A958
+   func_0020E8E0's only reference is an OPD at 0x0034EE80, which the boot log
+   shows is:  sys_ppu_thread_create tid=6 name="sgx-audio-thr"
+   => THE GAME CLOCK IS ADVANCED BY THE AUDIO THREAD
+
+the audio thread       enters func_0020E93C exactly once
+   of its 27 branch targets, only 3 are ever hit, each once:
+       loc_0020E9E0 -> loc_0020EA1C -> loc_0020EAA0
+   of its 20 call sites, 4 fire:
+       func_0025EB00 (cellAudioGetPortConfig) -> func_0025EB20
+       -> func_0020DC90 -> func_0020B4A8            <- last
+   inside func_0020A958 the last call is func_0020A8C8
+   inside func_0020A8C8 all three calls fire, the last being func_0020EFD0
+
+func_0020EFD0          LOOPS, calling import slot 0x003426AC =
+                       cellSpursJobGuardNotify, and never returns
+```
+
+So the audio thread runs the clock-writing path **once**, descends into
+`func_0020EFD0`, and stays there. Its cycle per iteration is
+
+    CreateJobChainWithAttribute -> JobChainAttributeSetName ->
+    JobGuardInitialize -> RunJobChain -> JobGuardNotify -> JoinJobChain
+
+and it completes roughly **one iteration every five seconds** -- about 7 in a
+35-second run, where audio would want ~60 a second. The guard is registered
+(`JobGuardInitialize` runs) and `JobGuardNotify` reports "0 remaining", so the
+guard is being satisfied; something else in the cycle is costing ~5 s, which
+has the shape of a timeout being waited out rather than work being done.
+
+**That is the frontier**: why `func_0020EFD0`'s SPURS job cycle runs at 0.2 Hz
+and never returns to its caller. Everything above it in the chain is accounted
+for.
+
+## Method note
+
+Instrumenting lifted C directly is the technique that worked, after three
+attempts to read the answer out of the source went wrong (a "dead" r9 that was
+an argument register, a "zero" counter from a truncated log, an "early exit"
+that branches on CELL_OK). `generated/` is regenerable, so probes there cost
+nothing permanent:
+
+- probe every `loc_*:` label to find which paths execute
+- probe every `ctx->lr = ...; func_*(ctx);` to find the last call made
+- use `tools/callgraph.py --callees` to instrument a whole level at once and
+  save rebuild cycles
+
+Also implemented this round: `cellSailGraphicsAdapterInitialize` and
+`cellSailGraphicsAdapterSetPreferredFormat` (both were UNIMPLEMENTED). They did
+not move the clock -- only `sceNpScoreInit` remains unimplemented, and that is
+online leaderboards.
