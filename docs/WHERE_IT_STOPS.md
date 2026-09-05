@@ -529,3 +529,48 @@ The mailbox holds LS addresses (0x400, 0x2000, 0x14860, …), not query answers,
 so feeding it back is wrong. A correct fix needs the SPU side to actually
 service commands **0x105/0x106** and post the real count. That is the next
 piece of work, and it is SPU-side, not PPU-side.
+
+### The SPU DOES answer the query -- we throw the answer away
+
+Correlating each job's command with the mailbox it posts (`SPURS_JOB_CMD=1`,
+reading the command out of the job's own command block at `desc+0x4C`):
+
+    cmd=0x0102 -> mbox=0x00014860      cmd=0x0104 -> mbox=0x000083C0
+    cmd=0x0105 -> mbox=0x00000001      cmd=0x0106 -> mbox=0x00000001
+    cmd=0x0200 -> mbox=0x00000000      cmd=0x2100 -> mbox=0x00000000
+
+**Commands 0x105 and 0x106 -- the input and output bus counts -- are answered
+correctly by the SPU: both come back 1.** The command reaches the SPU (dumping
+the command block at submit time shows `0102`, `0104`, `0105`, `0106`, `2100`,
+`3100` …), the job runs it, and posts the answer in its outbound mailbox.
+
+`jc_signal_done` then discards it and pushes a hardcoded 0, exactly as its own
+comment warns. So the answer exists and never reaches the PPU.
+
+**Attempted fix, and why it was REVERTED.** Forwarding `g_spurs_job_mbox` as the
+event's data3 (data2 left 0, and gated to command range 0x0100-0x01FF so audio
+jobs are unaffected) does work as far as it goes:
+
+- the `sgxbus` error clears in 3 of 4 runs, against 0 of 6 at baseline;
+- those runs reach `cellSaveDataAutoLoad2` and `cellFsStat`, which baseline
+  runs never reach;
+- no `SGX system terminate`.
+
+But it also makes the title write `0xFFFF000000000000` over its own TOC at
+`0x0035AA80` (the `[TOC+0x1860]` SGX object pointer), via `func_0023F3F4` --
+which is **memcpy** (an 8-bytes-at-a-time copy loop, `dst=r3 src=r4 len=r5`)
+called from the registration path with the TOC slot as its destination. A
+write-watch confirms the write does not happen at baseline
+(`SPURS_EVENT_D3=0` reproduces baseline without a rebuild: zero writes).
+
+The cause is that the gate is too broad. Commands 0x102/0x103/0x104 are in the
+same range but their answers are **LS addresses** (0x83C0, 0xB4D0, 0x14860),
+not counts -- `func_00201D38` stores query results into `module+0x1C/+0x20/
++0x24` and one of those becomes a memcpy destination. Only 0x105/0x106 return
+counts.
+
+So the remaining work is to establish, per command, what the answer means --
+which of the 0x1xx queries return counts and which return LS-relative pointers
+that must be translated (or not forwarded at all) -- rather than forwarding the
+mailbox wholesale. That is a small, well-bounded piece of work now that the
+mechanism and the measurement technique are both established.
