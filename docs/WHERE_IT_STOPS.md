@@ -603,3 +603,38 @@ value first. The next thing to check is whether the answer is supposed to be
 written into the JOB DESCRIPTOR instead -- specifically `job_desc+0x6C`, the
 word the audio loop tests at `loc_0020F108` before it will process a completion
 (see the earlier section) -- with data3 carrying something else entirely.
+
+### Ruled out: the job never writes its descriptor, for ANY command
+
+Per-command diff of the job descriptor between guest memory and the LS copy the
+job just ran against (`SPURS_JOB_DESCBACK=1`, printing the command from the
+job's own command block):
+
+    [descback] job=0x0292EB80 cmd=0x0102: (no change)
+    [descback] job=0x0292EB80 cmd=0x0104: (no change)
+    [descback] job=0x0292EB80 cmd=0x0200: (no change)
+    [descback] job=0x0292EB80 cmd=0x3100: (no change)
+    [descback] job=0x0292EB80 cmd=0x2100: (no change)
+                     ... 30 samples, every one "(no change)"
+
+So `job_desc+0x6C` is not written by the SPU under any command, and it is not
+written by the title (a write-watch shows it only ever zeroed). By elimination
+the writer is the SPURS **kernel** -- which is the part we emulate on the host.
+
+That is where this stops for now, and it stops on a judgement call rather than a
+missing measurement: the PPU loads that word and immediately dereferences it
+(`r10 = [entry+0x34]` then `r0 = [r10+0]`), so it is a POINTER to a completion
+structure whose layout is not established anywhere in this investigation.
+Supplying one means inventing both the value and the structure behind it, and
+three successive theories on this blocker (tverb, the SPU_WATCHEA artifact, and
+the data3 forward) each looked right and each had to be retracted after
+measurement. Guessing a pointer here would most likely produce a fourth.
+
+What a next attempt should establish FIRST, before writing any code:
+
+1. what structure `[job_desc+0x6C]` points to on hardware -- an RPCS3 trace of
+   this title's audio bring-up would settle it directly (see
+   [[ydkj-rpcs3-memory-dumper]] for the oracle approach used on YDKJ);
+2. whether `cellSpursJobGuardNotify`'s return value participates -- the audio
+   loop calls it immediately before each receive at `loc_0020F108` and branches
+   on it, and our HLE always returns 0.
