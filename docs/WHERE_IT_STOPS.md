@@ -263,3 +263,55 @@ Also implemented this round: `cellSailGraphicsAdapterInitialize` and
 `cellSailGraphicsAdapterSetPreferredFormat` (both were UNIMPLEMENTED). They did
 not move the clock -- only `sceNpScoreInit` remains unimplemented, and that is
 online leaderboards.
+
+## 2026-09-05 — past the SAIL wait and the sound bank; stops at the SGX tick
+
+Two fixes this session, both verified:
+
+1. **cellSail never invoked the guest event callback** (ps3recomp PR #133).
+   `cellSailPlayerInitialize2` registers a handler; we stored it and never
+   called it. The boot thread polled `[0x00B589F0]` every 1 ms forever.
+   The event is `{be32 major; be32 minor}` in one register — read off the
+   title's own handler `func_0018195C`, not guessed: major=2 (CALL_COMPLETED)
+   with minor = the call id (1 BOOT, 2 OPEN_STREAM, 10 START, 11 STOP).
+
+2. **VFS root doubling.** cellFs mappings are joined under `s_root_path`, so
+   `"/dev_hdd0/game/NPUA80523/" -> "input/"` became `input\input\USRDIR\...`
+   under `PS3_VFS_ROOT=input`. `static.sgd` never loaded →
+   `sgxResClose unknown ID (0)` → `SGX system terminate`. Mapped to the root
+   instead. SGX terminate 1 → 0.
+
+The title now clears both, reaches `cellSaveDataAutoLoad2`, and keeps its
+engine up.
+
+### Where it stops now
+
+Main thread waits in `func_002139CC` until the SGX tick at **`0x00C04A68`**
+(`[[r2+0x1860]+0x18]`) passes 3. Measured: `pending=0`, `deadline=0`,
+`now=0` — the tick is written twice at construction (memset + `func_00207BD8`)
+and never again.
+
+Chain, all measured rather than inferred:
+
+- the tick is `func_0020A958` (`[obj+0x18]++`), reached only by falling
+  through `func_0020B20C`;
+- whose only call site is `func_0020B4A8` at `0x20EACC`, in the audio
+  thread's outer loop `func_0020E93C`;
+- the audio thread enters `func_0020E93C` once, descends into
+  `func_0020EFD0`, and never returns to that call — `[clockobj+4]` walks
+  `-1 → 1 → 2 → 3` and stops at 3 (phase 4 = "returned" never happens);
+- inside `func_0020EFD0` it cycles `loc_0020F108 ↔ loc_0020F1F0` (~19,760
+  each), and the "job completed" block `loc_0020F170` is **never** entered.
+
+Why: it receives the SPURS job-chain completion event, then indexes
+`jc + 0x2B8 + data2*0x80` and requires `[entry+0x34] != 0`. Measured at the
+branch: `rc=0`, `data2=0`, `base=0x0292E900` (the job chain), `[entry+0x34]=0`,
+and a scan of all 16 slots finds none with a non-zero `+0x34`.
+
+So the next gate is **SPURS job-chain completion reporting**: our SPU jobs run
+and report "job complete", but nothing writes the per-job completion
+descriptor or puts a meaningful `data2` in the completion event.
+
+Forcing the tick from outside confirms this is the only thing holding the
+boot thread — the drain loop exits immediately and the main thread moves on to
+`func_0021FD64`. Still 0 draws, so there is at least one more gate behind it.
