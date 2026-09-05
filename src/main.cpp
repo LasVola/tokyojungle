@@ -274,9 +274,21 @@ int main(int argc, char* argv[])
          * the hdd game root points at the same place rather than at a hole.
          * cellFs matches the longest prefix, so these win over the /dev_hdd0/
          * device mapping below. */
-        cellfs_add_path_mapping("/dev_bdvd/PS3_GAME/", "input/");
-        cellfs_add_path_mapping("/dev_hdd0/game/NPUA80523/", "input/");
-        cellfs_add_path_mapping("/app_home/", "input/");
+        /* Map the game roots onto the VFS ROOT ITSELF, not onto "input/".
+         * cellFs joins every mapping under s_root_path, so a literal
+         * "input/" here doubles as soon as PS3_VFS_ROOT is "input" -- the
+         * way this title is actually launched:
+         *
+         *   Open(/dev_hdd0/game/NPUA80523/USRDIR/data/snd/static.sgd)
+         *     -> fopen(input\input\USRDIR\data\snd\static.sgd) : no such file
+         *
+         * which is the sound-bank miss described above, still happening.
+         * An empty host path is the root, which is where the syscall-side
+         * resolver (ppu_fs, <vfs_root>/<path-after-mount>) already puts
+         * these, so both halves of the split filesystem now agree. */
+        cellfs_add_path_mapping("/dev_bdvd/PS3_GAME/", "");
+        cellfs_add_path_mapping("/dev_hdd0/game/NPUA80523/", "");
+        cellfs_add_path_mapping("/app_home/", "");
     /* Point the hdd root at the installed game data -- cellFs joins host paths
      * under the root. The title stats /dev_hdd0 to confirm the device is there
      * and spins forever if it is not: it prints
