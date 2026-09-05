@@ -315,3 +315,47 @@ descriptor or puts a meaningful `data2` in the completion event.
 Forcing the tick from outside confirms this is the only thing holding the
 boot thread — the drain loop exits immediately and the main thread moves on to
 `func_0021FD64`. Still 0 draws, so there is at least one more gate behind it.
+
+### Upstream of the SGX tick: the audio graph is silent
+
+Continuing down the chain above, the SPU side turns out to be **working**, and
+the real gap is further up.
+
+The audio job does real work — `SPU_DMALOG` shows it GET its command block from
+its user-data pointer (`0x02933400`), stream in ~82 KB in 16 KB chunks, and PUT
+it all back. (An earlier "the job never touches its user data" reading was
+wrong: `SPU_WATCHEA` only matches PUT *destinations*, so GETs never registered.)
+
+But the buffer it processes is **entirely zero** — 20480/20480 words — so the
+job is faithfully processing silence, and never writes the completion word the
+PPU waits on. It issues no DMA into the chain/descriptor region at all.
+
+Why the buffer is silent, from the title's own stdout:
+
+    *** sgxbus.c(934)  : failed to regist module
+    *** sgxbus.c(1634) : unknown module name (tverb)
+
+Both `.sgd` banks now load correctly (`static.sgd` 8,995,536 bytes, `SGXD`
+magic, and `tj_bus.sgd` 2048 bytes), so this is not the file fix regressing.
+Probing the registration function `func_00202214` shows eleven modules
+attempted, in order:
+
+    user dmix thru amp filter comp lverb delay umix lverbx tverb
+
+`tverb` is the last one and the one that fails. Ruled out by measurement:
+
+- **not allocation** — every module including `tverb` gets a buffer
+  (`user 0x0297EBA0 … lverbx 0x0297FD10 tverb 0x0297FDE0`);
+- **not an unresolved indirect call** — none logged in the whole run.
+
+`func_00202214` succeeds only when `func_00201D38` returns a count equal to an
+expected count in r30; for `tverb` it comes back short. `func_00201D38` (319
+lifted lines) dispatches through per-module OPDs and stores results into
+`[r9+0x1C]`, `[r9+0x20]`, … so one of those per-module entries is returning
+failure for `tverb` specifically.
+
+That is the next thing to chase: **why `tverb` alone fails to register**. It is
+plausibly the whole chain — no `tverb` -> `sgxbus` cannot build the effect graph
+-> no audio work queued -> silent buffer -> no completion -> audio lap never
+finishes -> SGX tick frozen -> boot thread blocked. That last link is NOT yet
+proven, so treat it as the leading hypothesis rather than a diagnosis.
