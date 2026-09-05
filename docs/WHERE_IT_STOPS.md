@@ -399,3 +399,28 @@ four-bus `tj_bus.sgd` yield a bus count of 1?** Resolve the writer of
 `[r22+0x48]` (the write32 write-watch prints only host RVAs — it needs the
 guest-fn resolution the write64 path already has, see ps3recomp #132) and
 compare what it reads out of the file against the layout above.
+
+### The bus count comes from the SGXD resource system, not a text parse
+
+With write32 backtraces now resolving to guest functions (ps3recomp #134), the
+writer of the bus count is named directly:
+
+    [WWATCH] write32 0xD00FF704 = 0x00000001 bt: func_01180600 func_00214B38
+             func_002012E0 func_00201448 func_001BCA6C func_001EFF74 ...
+
+`func_00214B38` (436 lifted lines) writes it, called twice from
+`func_002012E0` (at 0x00201324 and 0x00201368). Its arguments are NOT a
+string/format pair — measured:
+
+    @0x00201324 r3=0000003E r4=0 r5=0        r6=0 r7=D00FF9C8
+    @0x00201368 r3=0000003E r4=0 r5=D00FF640 r6=0 r7=D00FF9C8
+
+so it is a resource query — type id `0x3E` (62), result written into the
+caller's stack buffer — against the SGXD data already loaded from
+`static.sgd`/`tj_bus.sgd`, i.e. part of the same `sgxres` system that produced
+the earlier `sgxres.c(167) : sgxResClose unknown ID (0)`.
+
+Next step for whoever picks this up: work out what resource type `0x3E` is and
+why querying it over a four-bus `tj_bus.sgd` returns 1. `func_002012E0`'s second
+call passes an extra stack pointer (`r5`), so comparing the two calls is
+probably the fastest way in.
