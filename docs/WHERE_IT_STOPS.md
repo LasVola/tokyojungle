@@ -574,3 +574,32 @@ which of the 0x1xx queries return counts and which return LS-relative pointers
 that must be translated (or not forwarded at all) -- rather than forwarding the
 mailbox wholesale. That is a small, well-bounded piece of work now that the
 mechanism and the measurement technique are both established.
+
+### Correction: forwarding the answer does not work, and the "clean" runs are corrupt
+
+Narrowing the forwarding gate to ONLY the two count commands (0x105/0x106),
+leaving every other command pushing 0, does **not** stop the corruption:
+
+    run1 err=(none)          clockobj=0xFFFF0018   draws=0
+    run2 err=(none)          clockobj=0xFFFF0018   draws=0
+    run3 err=sgxbus.c(934)   clockobj=0x00C04A68   draws=0
+    run4 err=sgxbus.c(934)   clockobj=0x00C04A68   draws=0
+
+Read that the right way round: the runs with **no error message are the ones
+whose TOC has been clobbered** (`[TOC+0x1860]` reads 0xFFFF0000). The absence of
+`sgxbus.c(...)` there is a symptom of the title running off the rails, not of
+the audio graph building. Every run whose TOC is intact still fails exactly as
+baseline does. The earlier reading of "3 of 4 runs clear the error" as progress
+was wrong.
+
+Note also that a count of 1 would not satisfy the check anyway: the failing
+comparison is requested index 1 against the count, and 1 vs 1 is still out of
+range. So either the counts should be larger than 1 for these modules, or the
+answer is not meant to travel this way at all.
+
+That makes the plain "forward the mailbox as data3" theory wrong, despite
+`SPURS_EVENT_D3` demonstrably changing behaviour. Something else consumes the
+value first. The next thing to check is whether the answer is supposed to be
+written into the JOB DESCRIPTOR instead -- specifically `job_desc+0x6C`, the
+word the audio loop tests at `loc_0020F108` before it will process a completion
+(see the earlier section) -- with data3 carrying something else entirely.
