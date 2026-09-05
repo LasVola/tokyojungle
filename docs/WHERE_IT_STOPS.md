@@ -681,3 +681,37 @@ seen before.
 That is the next thing to chase: which read, and why its destination walks into
 the image. It is independent of the SPURS work and probably an allocator or a
 size/count mismatch.
+
+### The corruption is an fread into NULL
+
+Instrumenting `func_0023F09C` (the fread) at entry, on the run where it fires:
+
+    [TJFR] read dst=0x00000000 size=1 n=23204496 FILE=0x05300000
+           pos[+0x48]=87031875 end[+0x60]=87031875 buf[+0x10]=0x05300043
+
+`fread(NULL, 1, 23204496, f)` -- a **22 MB read into a NULL destination**. The
+copy loop advances its destination (`r27 += chunk`), so it starts at 0 and walks
+up through memory in 64 KB chunks, which is exactly how it arrives at
+0x00340000 (the import/OPD table) and 0x00350000 (the TOC). Nothing is wrong
+with the memcpy or the stdio state; the caller handed it a null buffer.
+
+That is an unchecked allocation failure: something asks for ~22 MB, gets NULL,
+does not test it, and reads into it. The bump heap starts at 0x02000000 and the
+two sound banks already sit at 0x03010000 and 0x038A42D0.
+
+The path is intermittent -- it fires in roughly one run in six -- so catching
+the allocation itself needs a probe that survives several attempts. That is the
+concrete next step: find the ~22 MB (0x1621BD0) allocation, see why it returns
+NULL, and give it room.
+
+Summary of the two independent things standing between here and audio coming
+up, both now identified rather than suspected:
+
+1. `jc_signal_done` pushes a hardcoded 0 where the completion event should
+   carry the SPU's answer in data3 (the SPU answers correctly -- 0x105/0x106
+   both return 1).
+2. A ~22 MB allocation returns NULL and the title freads into it, smearing 64 KB
+   chunks over its own OPD table and TOC.
+
+Fixing (1) alone is not enough and is actively harmful, because it is what
+exposes (2).
