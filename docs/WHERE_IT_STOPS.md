@@ -359,3 +359,43 @@ plausibly the whole chain — no `tverb` -> `sgxbus` cannot build the effect gra
 -> no audio work queued -> silent buffer -> no completion -> audio lap never
 finishes -> SGX tick frozen -> boot thread blocked. That last link is NOT yet
 proven, so treat it as the leading hypothesis rather than a diagnosis.
+
+### Correction and the real audio-init failure: only one bus is created
+
+The `tverb` registration failure above is **timing-dependent, and usually does
+not happen**. Instrumenting the registration path directly:
+
+- all eleven modules allocate fine (`user 0x0297EBA0 … tverb 0x0297FDE0`);
+- all eleven pass `func_00201D38` — probing both call sites shows the returned
+  count equal to the expected count every time (`ret=76 want=76`, … 22 of 22);
+- the "failed to regist module" print site (`func_00202214`'s `loc_00202378`,
+  identified by its `r5=0x3A6`=934 line-number argument) **never executes** in a
+  normal run.
+
+The message only appeared in a run that also had `PS3_FSLOG=1`, i.e. under
+different stdout timing. Treat audio init as **racy**; that is itself a finding.
+
+The stable failure, reproduced on every clean run, is one line further on:
+
+    *** sgxbus.c(1641) : out of range bus (1,1)
+
+`func_00200470`, `loc_00200D78` (`r5=0x669`=1641). The two numbers are the
+requested bus index (r7) and the bus count (`[r22+0x48]`). Measured: **want=1,
+count=1** — the title asks for bus index 1 and only one bus exists.
+
+`r22` is a STACK address (`0xD00FF6BC`), so the count is a parse result, and a
+write-watch shows it written exactly **once, as 1** — it is not a running tally
+of successful creations.
+
+That is wrong against the data: `tj_bus.sgd` (2048 bytes, `SGXD`, read in full)
+defines four buses — the strings are `buss_1 buss_2 buss_3 buss_4`, plus
+`Tverb UMix_ambi UMix_Music Tverb1 tverb umix` and preset text
+(`preset=SMALL_HALL-S`, `dry=70`, …). Its header fields read as LITTLE-endian
+(`+04 = 0x7F6 = 2038`, `+08 = 0x800 = 2048`, `+14 = 0x488` for the `BUSS`
+chunk), which is worth checking against how the title parses them.
+
+So the open question is now narrow and data-backed: **why does parsing a
+four-bus `tj_bus.sgd` yield a bus count of 1?** Resolve the writer of
+`[r22+0x48]` (the write32 write-watch prints only host RVAs — it needs the
+guest-fn resolution the write64 path already has, see ps3recomp #132) and
+compare what it reads out of the file against the layout above.
