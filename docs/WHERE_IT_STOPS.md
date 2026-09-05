@@ -715,3 +715,36 @@ up, both now identified rather than suspected:
 
 Fixing (1) alone is not enough and is actively harmful, because it is what
 exposes (2).
+
+### Correction: nothing fails to allocate -- the fake answer is what makes the garbage
+
+The "unchecked 22 MB allocation failure" reading in the previous section is
+wrong. TJ overrides the title's malloc/memalign/realloc onto the HLE bump
+allocator (src/tj_crt_overrides.cpp -> src/import_resolver.h), which spans
+0x02000000-0x08000000 (96 MB), logs every allocation of 1 MB or more, and prints
+`[HLE] ERROR: heap exhausted!` when it runs dry. Across five captured runs:
+
+- `heap exhausted` occurrences: **0**
+- largest allocation logged: **0xB4 (180 bytes)**
+
+So the ~22 MB allocation is never even attempted. Nothing returns NULL; the
+caller simply passes a null buffer and a nonsense count, because it is running
+on a half-initialised structure.
+
+That reframes the whole `SPURS_EVENT_D3` result. Feeding the query a fabricated
+answer does not "expose a second bug" -- it walks the title into a code path
+its state was never prepared for, and the garbage `fread(NULL, 1, 23204496)` is
+the consequence. Any non-zero answer (1, 2, or the SPU mailbox) behaves the
+same, which fits: the value is not right, it is merely non-zero.
+
+Note also that the SPU's mailbox answer of 1 cannot be right on its own terms --
+the failing check is requested bus index 1 against the count, and 1 vs 1 is
+still out of range.
+
+**So the honest position is:** the title reads its DSP modules' bus counts out
+of the completion event's data3, we push 0 there, and *what the correct value
+is* is not established. Determining it means understanding what the DSP module
+SPU binaries actually compute for commands 0x105/0x106, or reading the answer
+off real hardware. Guessing has now been tried five times and produced five
+retractions; the next attempt should start from an oracle (an RPCS3 trace of
+this title's audio bring-up) rather than from inference.
