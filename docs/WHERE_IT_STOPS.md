@@ -1988,3 +1988,82 @@ or the menu alone will not produce one, and that is a property of the title, not
 a defect in the port. Reaching demo footage, if it is reachable at all, means
 driving the REPLAY player on screen 300 or entering a game mode -- neither of
 which is an attract sequence in the usual sense.
+
+---
+
+# Complete screen map, and two crashes fixed on the way
+
+The scene dispatcher tests **16** screen ids, not the 14 an earlier section
+claimed -- that list was built from *write* sites, which both missed ids set
+indirectly and included ids (2, 186) the dispatcher never tests. The authoritative
+list comes from the `gpr[28]` comparisons in `func_001E7404`:
+
+```
+0, 10, 20, 30, 40, 60, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000
+```
+
+All of them have now been forced with `TJ_GOTO` and, where they render, captured:
+
+| screen | what it is |
+|--------|------------|
+| 0    | boot logos -- the Crispy's, Inc. developer logo renders |
+| 10   | title, logo intro (18 draws) |
+| 20   | title, "PRESS ANY BUTTON" (13 draws) |
+| 30   | **main menu** -- TOKYO JUNGLE over the skyline, SURVIVAL / STORY / STATS / ARCHIVES |
+| 40   | **STORY mode select** -- Tokyo-ruins artwork, "Act. Ex", locked chapter slots (39 draws) |
+| 60   | black with a red chevron motif; transition wipe or needs state a forced entry skips (77 draws) |
+| 100  | **movie player** -- see below |
+| 200  | inert at sub 0 |
+| 300  | **RESULTS** -- Survival Points, R1 Fast Forward, REPLAY slots 001-004 (67 draws) |
+| 400  | **RANKING** -- TOTAL / MONTHLY / WEEKLY / DAILY, L1/R1, button bar (44 draws, 59 fps) |
+| 500  | reaches sub 10 (64 draws) |
+| 600  | **STATS**, cross-fading over the main menu (103 draws) |
+| 700  | **autosave** -- crashed on every visit until fixed |
+| 800  | redirects to 200 when forced |
+| 900  | does not take a forced jump; stays at 30 |
+| 1000 | reached on its own from 600 |
+
+## Two guest-pointer crashes, both fixed in ps3recomp
+
+Screen 700 and screen 100 were the only screens that crashed, and both were the
+same mistake in the runtime: **a guest address used directly as a host pointer.**
+
+* `cellSaveData`: `savedata_execute` called the title's `funcStat` and `funcFile`
+  as host function pointers. They are guest OPDs, so it jumped into guest memory
+  as code -- `ACCESS VIOLATION: execute at host 0x34C250` on every autosave. The
+  same path read `setBuf->fileListMax` off a guest address (fault at
+  `0xD00DCF84` = `r1+0x90`). Both now go through the marshalling path
+  `cellSaveDataAutoLoad2` was already using.
+* `cellSail`: `CreateDescriptor` printed its `uri` and `OpenStream` its `path` as
+  host strings. The log line stopped mid-token at `uri="` and the process died.
+  Both now copy the string out of guest memory, and the descriptor's `uri[512]`
+  field -- present all along, never written -- is filled.
+
+With those, screen 100 runs the whole movie pipeline: CreateDescriptor →
+AddDescriptor → OpenStream → Start, advancing sub 1 → 2 → 4 at 30 fps, and the
+media it asks for is finally legible:
+
+```
+x-cell-fs:///dev_hdd0/game/NPUA80523/USRDIR/data/region/US/load_credit_US.pam
+```
+
+`OpenStream` is still a stub so nothing decodes, but the stored URI is what a
+real implementation needs. This also corrects an earlier claim in this document
+that `cellSailPlayerOpenStream` is never called -- it is, just not at the title.
+
+## Attract mode: not present in this binary
+
+Every avenue is now closed:
+
+* All 16 screens forced and observed. None plays a demo; the movie player asks
+  for the credits.
+* No idle counter anywhere in the image -- zero hits for 1200/1800/3600/5400/
+  7200/9000/10800-frame thresholds.
+* `func_0011FF50`, the any-button check, has exactly one caller in the binary,
+  so nothing else could reset an idle timer.
+* Screen 20's timer wraps at 100 (prompt blink).
+* No `attract` string; the only `.pam` movies are loading screens, per-language
+  mode openings, and the credits. There is no demo reel on the disc.
+
+Leaving this title alone at the title screen or the menu does not start a demo,
+and that is a property of the game rather than a defect in the port.
