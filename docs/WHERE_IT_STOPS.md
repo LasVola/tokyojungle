@@ -1296,3 +1296,45 @@ waiting for, rather than looking for another broken HLE.
 
 Everything downstream is ready for it: the audio engine comes up, SPU workloads
 dispatch, fences flow (353 per run, monotonic), and the title renders 32 draws.
+
+### PINPOINTED: stuck in scene state 10, sub-state 0xC8
+
+`func_001E7404` is the title's scene machine (6,916 lifted lines, 573 blocks).
+Block-profiling it and reading the dispatch:
+
+    loc_001E7864:  switch (r28)          /* the scene state */
+        10 -> loc_001E7E08
+        20 -> loc_001E8118
+         0 -> falls through
+    loc_001E7E08:  switch ([r31+0x30])   /* the sub-state within state 10 */
+        0 / 1 / 0xA / 0xB / 0x64 / 0xC8
+
+Measured, with a counter at `[r31+0x34]` ticking inside each:
+
+    dispatch #1   state=0   [r31+0x30]=0x00
+    dispatch #21  state=0   [r31+0x30]=0x65
+    dispatch #61  state=10  [r31+0x30]=0x00
+    dispatch #81  state=10  [r31+0x30]=0xC8   <-- and it stays here
+
+So the machine DOES advance -- 0 -> 10, and through the sub-states to 0xC8 --
+and then sits there for as long as you let it (verified static over 135 s).
+
+Sub-state 0xC8 is `loc_001E94FC`, and it is a single gate:
+
+    r5 = [r31+0x34];                      /* the tick counter */
+    r3 = func_001D0738(r26, 0xC8, r5);
+    if (r3 == 0) goto loc_001E8868;       /* not finished -- stay */
+    [r31+0x34] = 0; [r31+0x30] = 1;       /* finished -- advance */
+
+**`func_001D0738(obj, 0xC8, counter)` never returns non-zero.** It is 716 lifted
+lines of float work -- fades, positioning, layout -- i.e. a screen that reports
+"still running" every tick and never reports done.
+
+That is the single thing between here and the scene machine moving on toward the
+state that plays the attract movie. Everything under it is working: audio comes
+up, SPU workloads dispatch, fences flow (353/run, monotonic), 32 draws and 12
+clears render per run.
+
+**Next: why `func_001D0738` never completes for screen 0xC8.** It is a bounded
+question -- one function, one screen id -- and the same block-profiling approach
+used on the scene machine applies directly to it.
