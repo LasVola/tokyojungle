@@ -1372,3 +1372,26 @@ returns 0 every time. So the reset comes from somewhere else.
 `[r31+0x34]` (r31 = 0x00BC9BD0, so the address is 0x00BC9C04) every 60 ticks.**
 A write-watch on that word names it directly -- `YDKJ_WWATCH=0x00BC9C04`, and
 write32 backtraces resolve to guest functions since ps3recomp #134.
+
+### The resetter is the scene machine itself
+
+Write-watching the timer word (`0x00BC9C04`) names it, now that write32
+backtraces resolve to guest functions (ps3recomp #134):
+
+    write32 0x00BC9C04 = 0 bt: func_011801F4 func_001E1898 func_001EF6D0 ...   (init)
+    write32 0x00BC9C04 = 0 bt: func_011801F4 func_001E7404 func_001F0BC0 ...   (repeating)
+
+So `func_001E7404` -- the scene machine -- zeroes its own screen timer roughly
+once a second, which is why the timer cycles 0..60 and the screen that needs
+2999 never finishes.
+
+`func_001E7404` has **271** separate `[r31+0x34] = ...` sites, so picking the
+one that fires needs instrumentation rather than reading: tag each write with an
+index and log which index actually runs. The block profile is already the right
+tool for that (the state machine has 573 blocks and profiling it is what found
+sub-state 200 in the first place).
+
+Worth considering while doing that: the timer cycling 0..60 and back looks like
+the machine leaving sub-state 200 and re-entering it every second, rather than a
+stray write. If so the question becomes what transition takes it out and back --
+and that may well be the same missing input/event that keeps flips at 9.
