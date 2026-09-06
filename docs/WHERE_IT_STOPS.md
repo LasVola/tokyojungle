@@ -969,3 +969,34 @@ running a frame loop -- `flips` stays at 8. Two things to chase:
    run only opens 2 files. `sys_ppu_thread_once`'s blocking semantics took this
    from 6-in-6 failing to about 2-in-8; whatever is left is a second ordering
    problem earlier in the sequence.
+
+### After first pixels: the FIFO walker derails
+
+With the SPU workload registered the event-flag gate is gone for real -- a good
+run now records **zero** `EventFlagWait BLOCKED`. The title draws, then settles.
+
+Where it waits now: the main thread loops in `func_001F8C4C`, which calls
+`cellGcmGetControlRegister` and then spins on `[ctrl+8]` -- the **ref** register
+-- waiting for the RSX to reach a fence. That wait never clears because the FIFO
+walker loses its place:
+
+    [cellGcmSys] FIFO resync 0x01D00160 -> put 0x000019F0
+
+`0x01D00160` is not a plausible get offset. The cause is visible in the
+neighbouring reports:
+
+    unknown method 0x0398 = 0x3F800000     <- float 1.0f
+    unknown method 0x0394 = 0x00000000
+    unknown method 0x0194 = 0xFEED0000
+    unknown method 0x1D88 = 0x000012D0
+
+`0x3F800000` is 1.0f, which is exactly the signature this file already
+documents: the walker mis-counted a method batch a few dwords back and is now
+decoding VERTEX DATA as commands. The resync recovers the FIFO but discards
+everything between, so the fence the title is waiting on is never published.
+
+**Next: find the method whose argument count is wrong.** The walker keeps a
+64-entry trace of consumed words for exactly this (`s_tr_off`/`s_tr_w` in
+libs/video/cellGcmSys.c, dumped on a bad branch) -- that dump names the command
+that consumed the wrong count. This is RSX command-decode work and is
+independent of everything above.
