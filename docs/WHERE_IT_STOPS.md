@@ -1089,3 +1089,24 @@ a running frame loop.** Concretely, in order:
 2. account for the fences: the title issues more SET_REFERENCE than the one that
    is drained, so find where the rest are lost -- the resync discarding a
    segment is the obvious suspect.
+
+### The park is never patched -- the resync is not too eager
+
+Tested directly: gave the jump-park path a grace period (only resync if the same
+park is still standing after N passes, default ~2 s) instead of resyncing on the
+first pass that sees `put` elsewhere.
+
+    PARK GRACE ON: draws=1 clears=5 flips=8 fences=1 resync=1
+
+Identical to without it. The title never patches that park, so waiting longer
+buys nothing and the resync-to-put is the right call. Reverted -- the value was
+the disproof, not the change.
+
+That leaves the second candidate: **the fences are lost, and not because we gave
+up on the park too early.** One `SET_REFERENCE` is drained per run
+(`refq drained fence 0x0 at getoff=000009A0`) while the title clearly submits
+more. Worth noting for whoever picks this up: `put` sits at 0x000019F0 and the
+park is at 0x01D00160, which is not inside the ring the title mapped
+(`ea=0x02300000 -> io=0x0E000000`, 1 MB) -- so the walker crossed into a
+different IO region to get there. Establishing which region 0x01D00160 belongs
+to, and why a JUMP led out of the ring into it, is the next concrete step.
