@@ -1692,3 +1692,85 @@ anything measured off a capped counter.
 **Next:** resolve `key=0x23A0` through the queue table and check which id the
 title's audio thread actually waits on, then whether `state=3` clears once the
 notification is delivered.
+
+---
+
+# The title sequence is complete, and there is no attract timeout to find
+
+## What the port actually does now
+
+```
+screen=0   boot / logos
+screen=10  title logo intro          draws 18, ~31 fps
+screen=20  "PRESS ANY BUTTON"        draws 13, ~31 fps
+screen=30  menu (on input)           draws 16, ~30 fps
+```
+
+This is **the same behaviour as the reference recording**, which is the decisive
+comparison. That recording is our own port -- its window caption reads
+`Tokyo Jungle (ps3recomp) | FPS: 20.37 | draws: 18 | 1280x720` -- and it shows
+the full title with logo, cityscape and copyright at `draws: 18`, then the
+"PRESS ANY BUTTON" state at `draws: 13`. Our current build reports exactly those
+draw counts in exactly those states. The title sequence is not missing anything.
+
+## The window caption is the rendering telemetry
+
+`Tokyo Jungle (ps3recomp) | FPS: nn | draws: nn | 1280x720`, updated live. This
+is the uncapped per-frame measure that the previous section said did not exist.
+It does, and it has all along. Read it with
+
+```bash
+powershell -NoProfile -Command \
+  "(Get-Process tokyojungle | Select-Object -First 1).MainWindowTitle"
+```
+
+## Screenshots of this window cannot be trusted
+
+`PrintWindow` returns `TRUE` and produces a plausible-looking 1.4 MB PNG that
+shows **only the sky layer** -- no logo, no city, no text -- in states where the
+caption reports the same draw count as the reference recording's full title.
+Three such captures were taken and briefly believed; they are a capture artifact
+of grabbing a D3D12 swapchain, not what is on screen. `CopyFromScreen` fails
+outright ("handle is invalid") and ffmpeg's `gdigrab` produces no stream at all,
+both because this session has no accessible desktop. **Do not use screenshots as
+evidence here.** The caption is the measurement.
+
+## There is no idle timeout to attract mode
+
+The goal was to reach attract mode by letting the title sit. The binary does not
+support that reading:
+
+* The 1610-tick timer in screen 10 is the **logo intro**, not an attract timer.
+  It fires correctly and hands off to the interactive title state.
+* Screen 20's own timer **wraps at 100** -- `loc_001E93A4` computes
+  `(timer + 1) % 100` via the `0x51EB851F` reciprocal and stores the remainder
+  back. It is a blink counter for the prompt text. It can never reach a
+  threshold.
+* Screen 20's only exit is `func_0011FF50`, the any-button check. Confirmed both
+  by reading it and by 573 basic-block counters: the block past that gate never
+  executes until input arrives.
+* Screen 30's live blocks (30 of them, same technique) contain no timeout
+  comparison either.
+* The largest constant anywhere in `func_001E7404` is `0x2928`, and it is an
+  **error code** (`r3 ^ 0x80020000`), not a duration.
+* The ELF contains no `attract` string. The only demo assets it references are
+  four sound banks (`tj_menu2_demo`, `tj_stage04/07/08_demo`); three further
+  demo banks exist on disc but are not referenced by the retail EBOOT.
+
+So idling at the title does not lead anywhere in this build, and no amount of
+waiting will change that. If Tokyo Jungle has an attract sequence it is not
+driven by an idle timer in this scene machine, and finding it means looking
+outside `func_001E7404` -- at whatever else could push a scene change.
+
+## Diagnostic knobs
+
+* `TJ_FASTTITLE=<ticks>` -- replaces the 1610-tick logo-intro threshold.
+  `TJ_FASTTITLE=1` reaches the interactive title in ~12 s instead of ~8 min.
+* `TJ_FORCEBTN=1` -- `func_0011FF50` reports a button down for its first two
+  calls, enough to step title -> menu without a pad.
+* `TJ_TITLEBTN=1` -- forces the title's own pad byte. **Of limited use**: the
+  accept action is gated on `byte[r31+0x15]`, which is 0, so the forced press
+  falls into the blink-phase arithmetic and never reaches the handler, and
+  because the branch is taken before the timeout comparison it also suppresses
+  the timeout.
+* `TJ_CBLOG=1` -- restores the guest-callback log (off by default).
