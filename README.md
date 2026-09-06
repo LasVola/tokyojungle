@@ -1,5 +1,9 @@
 # Tokyo Jungle Recompiled
 
+![Tokyo Jungle running natively — the title screen, rendered by the recompiled game](assets/title-screen.gif)
+
+<sub>The title screen, live: recompiled PPU code, the game's own SPU workloads, and its RSX command stream on D3D12. No emulator.</sub>
+
 **A Pomeranian walks into post-apocalyptic Tokyo. No, seriously.**
 
 Tokyo Jungle (2012) is the most wonderfully absurd game Sony ever published — a survival action game where you play as animals fighting for dominance in a Tokyo abandoned by humanity. One moment you're a tiny Pomeranian sneaking past lions in Shibuya, the next you're a dinosaur asserting territorial control over Yoyogi Park. It's brutal. It's beautiful. It has no business being as good as it is.
