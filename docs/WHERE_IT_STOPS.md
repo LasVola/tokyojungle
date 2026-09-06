@@ -1267,3 +1267,32 @@ That means the missing piece is upstream of Start: the title has its adapters
 set and its player booted, and something it checks before calling OpenStream is
 not satisfied. Worth noting `cellSailPlayerOpenStream` is still a stub in the
 runtime that opens nothing, so even reaching it would not play anything yet.
+
+### The movie path is never entered -- it is a scene-machine state, not a missing call
+
+Walked the call chain for `cellSailPlayerOpenStream` (import stub
+`func_0025ED20`, slot 0x3425E4) and `cellSailPlayerStart` (`func_0025EEE0`,
+slot 0x34261C):
+
+    OpenStream <- func_00182EFC <- func_0018380C <- { func_0018E7AC,
+                  func_001E7404, func_001EF94C, func_001EFB80 }
+    Start      <- func_00182198, func_00183194
+
+Probed every one of them. **None of the direct callers run**, and of the four
+one level up only `func_001E7404` is entered. It never calls `func_0018380C`.
+
+The call site is `loc_001EA940` inside `func_001E7404`, which is **6,916 lifted
+lines** -- the title's scene/state machine -- and the call looks like "play movie
+N":
+
+    r3 = [TOC+0x12D4];  r4 = 0;  r5 = 5;  f1 = f2 = f3 = [TOC+0x564]
+    func_0018380C(...)
+
+So this is not a missing call or a bad gate on the SAIL side. **The title's scene
+machine has not advanced to the state that plays the attract movie.** That is
+the thing to chase, and it is a different kind of problem from everything above:
+work out which state `func_001E7404` is sitting in and what transition it is
+waiting for, rather than looking for another broken HLE.
+
+Everything downstream is ready for it: the audio engine comes up, SPU workloads
+dispatch, fences flow (353 per run, monotonic), and the title renders 32 draws.
