@@ -1135,3 +1135,40 @@ issues a JUMP during init that we take before the trace starts recording, and
 whether `put`/`get` in the control block are being read from the right places
 given the title maps a second ring (`ea=0x02300000 -> io=0x0E000000`) that
 neither `get` nor `put` currently points into.
+
+### It is cellGcmFinish waiting for a fence that is in the OTHER ring
+
+The wait decoded exactly. `func_001F8C4C` is `cellGcmFinish`:
+
+    r0 = [ctrl + 8];                 /* ref */
+    if (r31 == r0) return;           /* already there */
+    do { usleep(30); r29 = [ctrl+8]; } while (r31 != r29);
+
+so it spins until `ref` equals the reference value the title set. Measured:
+
+    [TJW] WANT ref==0x00000001 but ref=0x00000000 put=0x000019F0 get=0x000019F0
+
+The title is waiting for **ref == 1**. We publish **0**, and `GCM_REFLOG` shows
+exactly one fence drained for the whole run -- value `0x0`, at `getoff=0x9A0`.
+
+The `NV406E_SET_REFERENCE` handler itself is fine (`rsx_commands.c` sets
+`g_rsx_last_reference = data` for method 0x0050), and the walker pushes it
+correctly, so `data` really was 0. And the walker is not behind: `GCM_DRAINDBG`
+shows it settle at `getoff == put == 0x19F0` and stay there, fully drained and
+idle.
+
+**So the title's `SET_REFERENCE(1)` is not in the range the walker consumes at
+all.** That fits the other loose end recorded above: the title maps a SECOND
+ring --
+
+    MapEaIoAddress(ea=0x02300000, io=0x0E000000, size=0x100000)
+
+-- which neither `get` nor `put` ever points into. The walker follows one
+command stream; the fence the title is waiting on is in the other.
+
+**Next: find how the title switches to the io=0x0E000000 ring and why the walker
+never follows.** Either it issues a JUMP/CALL into it that we mis-handle, or it
+drives that ring through a second control block we are not reading. Both are
+checkable: log every JUMP/CALL target against the two ring ranges
+(`GCM_RECDBG=1` already prints `[JMP]`), and check whether anything writes a
+`put` other than the one at `GCM_CONTROL_GUEST_ADDR`.
