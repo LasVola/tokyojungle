@@ -1338,3 +1338,37 @@ clears render per run.
 **Next: why `func_001D0738` never completes for screen 0xC8.** It is a bounded
 question -- one function, one screen id -- and the same block-profiling approach
 used on the scene machine applies directly to it.
+
+### The exact mechanism: the screen timer resets at 60 and can never reach 2999
+
+`func_001D0738` is a screen driver. Its completion test, at `loc_001D107C`:
+
+    cmp(r5, 0xBB7);          /* r5 = the tick counter passed in */
+    r3 = 1;
+    if (r5 > 0xBB7) return r3;   /* > 2999 -> screen is done */
+
+so state 10 / sub-state 200 finishes once its counter passes **2999**. And in
+the scene machine, `loc_001E8868` (the "still running" path) does increment it:
+
+    [r31+0x34] = [r31+0x34] + 1;
+
+Logging the call and the counter together:
+
+    func_001D0738 -> 0  (counter 0,   substate 200)
+    func_001D0738 -> 0  (counter 60,  substate 200)
+    func_001D0738 -> 0  (counter 0,   substate 200)   <-- reset
+    func_001D0738 -> 0  (counter 60,  substate 200)
+
+**The counter climbs to 60 and is then reset to 0, over and over.** It never
+gets past 60, so a screen that needs 2999 can never finish and the scene machine
+can never move on toward the attract movie.
+
+60 ticks is one second at 60 Hz, so something is restarting this screen once a
+second. The only place in the scene machine that zeroes `[r31+0x34]` is the
+completion path at `loc_001E94FC` -- which is not being taken, since the gate
+returns 0 every time. So the reset comes from somewhere else.
+
+**Next, and this is now a very small question: find what writes 0 to
+`[r31+0x34]` (r31 = 0x00BC9BD0, so the address is 0x00BC9C04) every 60 ticks.**
+A write-watch on that word names it directly -- `YDKJ_WWATCH=0x00BC9C04`, and
+write32 backtraces resolve to guest functions since ps3recomp #134.
