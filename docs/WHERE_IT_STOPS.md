@@ -1030,3 +1030,36 @@ So the question is narrower than "which method has the wrong argument count":
 **how does `get` come to be 0x01D00160 before any FIFO word is consumed?** Worth
 checking what seeds `get` at init against what the title expects, and whether
 anything writes the control block's `get` field behind the walker's back.
+
+### Correction: it is the JUMP-PARK resync, not stuck-get
+
+The walker resyncs from four places and all four printed the same line, so the
+resync could not be attributed. Naming them (ps3recomp: unmapped-JUMP /
+jump-park / unmapped-CALL / stuck-get) settles it:
+
+    [cellGcmSys] FIFO resync (jump-park) 0x01D00160 -> put 0x000019F0
+
+Not stuck-get, and not a mis-counted method batch either -- both earlier
+readings here were wrong. With the decode dump wired to that path, the words
+around 0x01D00160 are real commands, not vertex data:
+
+    [FIFODUMP] -20 io=01D00110 w=0010A400
+    [FIFODUMP] -15 io=01D00124 w=000408E4
+    [FIFODUMP] -14 io=01D00128 w=00AE0401
+    [FIFODUMP] -13 io=01D0012C w=00041710
+
+So the walker is not lost. It followed a JUMP to a **park** -- the title parks
+the FIFO by jumping to a block it patches later -- and the title has not patched
+that block yet. Our walker waits a few passes and then resyncs to `put`, which
+discards everything between and with it the fence the main thread is spinning
+on, so `[ctrl+8]` never clears.
+
+That resync is a deliberate trade (the comment in cellGcmSys.c explains that
+waiting for a patch that never comes froze the FIFO for the rest of the run in
+another title), but for this title it is the wrong half of the trade.
+
+**Next: work out when this title patches its park.** The two candidates are that
+we resync too eagerly (the patch is coming, just later than our pass budget), or
+that the patch is written somewhere our walker does not re-read. A write-watch
+on the park address while the title runs distinguishes them: if the word at
+0x01D00160 is rewritten after we have already resynced, it is the former.
