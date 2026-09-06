@@ -1870,3 +1870,64 @@ stage loading and menu artwork alike. Both diagnostics used to establish that
 `libs/filesystem/cellFs.c`) are left in the runtime worktree, env-gated and off
 by default. That tree is shared with other sessions -- check `git status` there
 before assuming it is clean.
+
+---
+
+# RETRACTION: assets DO load. The two sections above are wrong.
+
+The claim that "no file is opened after boot, on any screen" is **false**, and so
+is everything built on it -- including "even if a trigger were found, the demo
+would have nothing to play".
+
+The game opens these through the lv2 syscall path, which the runtime logs as
+`[sys_fs] open OK`:
+
+```
+titleTexPack.pac   titleTexPack_EN.pac   strData_EN.pac
+clg_prm.pac (x2)   clg_txtENG.pac (x2)
+eo_wolf1_pac.pad   eo_attach_tex.pad   em_tex_s.pad   em_pac_s.pad
+```
+
+Title textures, string data, and character packs -- `eo_wolf1_pac.pad` is the
+wolf. The seven `.sgd` sound banks are simply the cellFs half of the picture.
+
+**How I got it wrong, because the shape of the mistake matters.** I counted
+cellFs opens, saw only sound banks, and went looking at the syscall path. I
+added `TJ_FSLOG` to `sys_fs_open`, got zero, and treated that zero as
+confirmation -- when these opens do not route through the function I
+instrumented, and the runtime had been logging them as `[sys_fs] open OK` all
+along. A probe that reports nothing is first evidence about the probe. This is
+the third time in this session that an instrument, not the title, was the thing
+that was broken.
+
+It also resolves a contradiction I had been carrying without chasing: the title
+renders a photographic cityscape while supposedly opening no texture file. It
+opens `titleTexPack.pac`. That the contradiction sat there unexamined is the
+tell I should have followed.
+
+## What is actually true
+
+Assets load at boot and the screens render. Forcing each screen and dumping a
+presented frame (`CELLMARK_DUMP`, below) shows finished UI:
+
+* **screen 400 = RANKING** -- TOTAL / MONTHLY / WEEKLY / DAILY tabs, L1/R1
+  hints, START/X/triangle/circle button bar. Complete and correct.
+* **screen 600 = STATS**, cross-fading over the **main menu**, which reads
+  **SURVIVAL / STORY / STATS / ARCHIVES** beneath the Tokyo Jungle logo.
+* screen 30 is the menu itself; 60 and 300 are further menu screens.
+
+No screen loads *additional* files beyond the boot set, which is the part of the
+earlier observation that survives -- but the boot set already contains the title
+art, the strings and a character, so screens render real content from it.
+
+## A capture path that works: `CELLMARK_DUMP`
+
+`CELLMARK_DUMP=<n> CELLMARK_DUMP_SKIP=<frames> CELLMARK_DUMP_DIR=<dir>` writes
+presented frames to BMP **from inside the process**, so it needs no desktop --
+unlike `PrintWindow` (returns TRUE, renders only the sky layer),
+`CopyFromScreen` ("handle is invalid") and ffmpeg `gdigrab` (no stream), all of
+which fail or lie in this session. At ~30 fps, `SKIP=5200` lands about 200 s in,
+which is where a `TJ_FASTTITLE=1 TJ_FORCEBTN=1 TJ_GOTO=<id>` run has settled on
+its target screen. `SKIP=1200` lands on the Crispy's, Inc. developer logo.
+
+**This is the only trustworthy way to see what this port is drawing.**
