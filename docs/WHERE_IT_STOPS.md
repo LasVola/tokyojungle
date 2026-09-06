@@ -783,3 +783,51 @@ So the oracle route needs the package extracted properly (with the .rap) before
 RPCS3 can be used to answer what the DSP bus counts should be. That is a
 prerequisite for the next attempt, not an optional extra -- inference has a 0/6
 record on this blocker.
+
+### Correction: the count check PASSES with the SPU's answer -- the fix is right
+
+An earlier note here claimed "a count of 1 would not satisfy the check anyway,
+since 1 vs 1 is still out of range". That was the comparison read backwards.
+The actual test in `func_00200470` is
+
+    r0 = [r28+0x28];                       /* the module's bus count */
+    cmp(a = r0, b = r7);                   /* r7 = the requested bus */
+    if (a < b) goto loc_00200D78;          /* ERROR when count < requested */
+
+so it errors on `0 < 1` (what we produce today) and **passes** on `1 < 1`
+(what the SPU actually answers). Forwarding the answer is therefore correct, and
+"any non-zero value behaves the same" is exactly what should be expected, not
+evidence against it -- any count >= 1 clears a request for bus 1.
+
+That fix is now ps3recomp #135, off by default behind `SPURS_ANSWER_QUERIES=1`.
+
+### The gate behind it
+
+With the query answered, the title advances into `func_00184FC4`, which is a
+plain load-whole-file:
+
+    f = fopen(...);  if (!f) return;
+    fseek(f, 0, SEEK_END);  size = ftell(f);  fseek(f, 0, SEEK_SET);
+    dst = [[TOC-0xB60]];                     /* a GLOBAL buffer pointer */
+    fread(dst, 1, size, f);                  /* size measured: 23,204,496 */
+    fclose(f);
+    *out_size = size;
+
+`[[TOC-0xB60]]` resolves to `[0x00BCB7D0 + 0]`, and that word is **NULL**. A
+write-watch over the object shows its neighbours initialised (+4 = 6, +8 = 5,
++0xC counting 0..4) and +0 never written by anything except the corruption
+itself. `func_00184FC4` is the ONLY function in the lifted image that references
+`TOC-0xB60`, and it only reads it.
+
+Since the fread destination advances through the copy loop, a NULL start walks
+from address 0 upward in 64 KB chunks and lands on the OPD table (0x00340000)
+and the TOC (0x00350000) -- which is the `0xFFFF0000` corruption reported
+earlier in this document.
+
+23,204,496 is in the range of this title's `.pam` movies (`load_short.pam`
+15.5 MB, `load_rebirth.pam` 20.8 MB, `load_long.pam` 26 MB), so this is very
+likely the load/attract movie being read whole.
+
+**Next: find what allocates that buffer and stores it at `[0x00BCB7D0]`.** It is
+not the language-selection path (`func_001F06DC` writes a language CODE, 0xE, to
+a different object's +0). Reached only with `SPURS_ANSWER_QUERIES=1`.
