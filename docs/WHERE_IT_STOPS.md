@@ -1395,3 +1395,42 @@ Worth considering while doing that: the timer cycling 0..60 and back looks like
 the machine leaving sub-state 200 and re-entering it every second, rather than a
 stray write. If so the question becomes what transition takes it out and back --
 and that may well be the same missing input/event that keeps flips at 9.
+
+### Correction: it is NOT stuck at sub-state 200 -- it advances, and stops at 1
+
+Two readings above were wrong and are corrected here.
+
+Tagging all 263 `[r31+0x34] = ...` sites in the scene machine and logging which
+one clears a counted-up timer gives exactly one hit:
+
+    [RST] site 57 zeroes the timer (was 83)
+
+and site 57 is the **success** path inside `loc_001E94FC` itself:
+
+    if (r3 == 0) goto loc_001E8868;   /* still running */
+    [r31+0x34] = 0;  [r31+0x30] = 1;  /* DONE -> advance */
+
+So `func_001D0738(obj, 0xC8, ...)` **does** complete, at ~83 ticks, and the
+machine **does** advance. The earlier "the timer resets at 60 and never reaches
+2999" reading came from a probe that only fired while the sub-state was already
+200, so it could only ever show 200.
+
+Tracing sub-state CHANGES instead gives the real sequence:
+
+    state 10 sub-state -> 0 -> 200 -> 1        and then nothing, for 36 s
+
+**The machine advances 0 -> 200 -> 1 and stops at sub-state 1**, which is
+`loc_001E8B7C`:
+
+    r5 = [r31+0x34];
+    r3 = func_001D0738(r26, 1, r5);       /* the same driver, SCREEN ID 1 */
+    if (r3 == 0) goto loc_001E9320;       /* still running */
+    [r31+0x30] = 0x64;  [r31+0x34] = 0;   /* done -> sub-state 100 */
+
+So the current blocker is precise: **`func_001D0738(obj, 1, counter)` never
+returns non-zero.** Screen id 1, not 0xC8, and its completion condition will be
+a different branch of that 716-line driver than the `> 2999` one used by 0xC8.
+
+Next: block-profile `func_001D0738` while it is running screen 1 (the profiler
+is 28 blocks there, and the id arrives in r4) and find that screen's completion
+test the same way `loc_001D107C` was found for 0xC8.
