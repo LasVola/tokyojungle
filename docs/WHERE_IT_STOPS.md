@@ -1947,6 +1947,11 @@ placeholders:
 | 60     | black with a red chevron motif -- transition wipe, or needs state a forced entry skips | 77 | 30 |
 | 186    | inert at sub 0 | 16 | 31 |
 | 200    | inert at sub 0 | 16 | 31 |
+
+**Screen 30 confirmed visually:** a frame dump taken at ~120 s (before a forced
+jump fired) shows the finished main menu -- the TOKYO JUNGLE logo over the
+Tokyo skyline, with SURVIVAL highlighted and STORY / STATS / ARCHIVES beside
+it, over the copyright line. This port renders Tokyo Jungle's main menu.
 | 300    | **RESULTS** -- Survival Points, R1 Fast Forward, **REPLAY** slots 001-004 | 67 | 30 |
 | 400    | **RANKING** -- TOTAL / MONTHLY / WEEKLY / DAILY tabs, L1/R1, button bar | 44 | 59 |
 | 500    | reaches sub 10 | 64 | 23 |
