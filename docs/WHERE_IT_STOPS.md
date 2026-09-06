@@ -1110,3 +1110,28 @@ park is at 0x01D00160, which is not inside the ring the title mapped
 (`ea=0x02300000 -> io=0x0E000000`, 1 MB) -- so the walker crossed into a
 different IO region to get there. Establishing which region 0x01D00160 belongs
 to, and why a JUMP led out of the ring into it, is the next concrete step.
+
+### `get` is at the park before anything is decoded
+
+`GCM_RECDBG=1` on a good run logs exactly one JUMP for the whole run, and it is
+the park itself:
+
+    [JMP] 01D00160 -> 01D00160 (put=000019F0)
+
+and **no recycle events at all** (`[REC>]`/`[REC<]` never appear). So the walker
+did not travel to 0x01D00160 by following commands -- consistent with the trace
+ring being empty. `s_fifo_getoff` is already sitting on that park the first time
+the walker looks, while `put` is at 0x000019F0 in a different region.
+
+That rules out the two readings this document previously offered (a mis-counted
+method batch walking the decoder into data, and the walker being stuck after
+travelling there). The question is now specifically:
+
+**why does the walker's `get` start at 0x01D00160 rather than at the title's
+command buffer?** `s_fifo_getoff` initialises to 0, so something sets it, and it
+is not the recycle path (which never runs here). Candidates worth checking in
+order: what `cellGcmInitBody` seeds for this title's buffer, whether the title
+issues a JUMP during init that we take before the trace starts recording, and
+whether `put`/`get` in the control block are being read from the right places
+given the title maps a second ring (`ea=0x02300000 -> io=0x0E000000`) that
+neither `get` nor `put` currently points into.
