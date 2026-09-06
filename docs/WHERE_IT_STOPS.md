@@ -1931,3 +1931,55 @@ which is where a `TJ_FASTTITLE=1 TJ_FORCEBTN=1 TJ_GOTO=<id>` run has settled on
 its target screen. `SKIP=1200` lands on the Crispy's, Inc. developer logo.
 
 **This is the only trustworthy way to see what this port is drawing.**
+
+## The screen map, from frame dumps
+
+Forcing each screen (`TJ_GOTO`) and dumping a presented frame (`CELLMARK_DUMP`)
+identifies what this port actually renders. These are finished screens, not
+placeholders:
+
+| screen | what it is | draws | fps |
+|--------|------------|-------|-----|
+| 0      | boot logos -- the Crispy's, Inc. developer logo renders | - | - |
+| 10     | title, logo intro | 18 | 31 |
+| 20     | title, "PRESS ANY BUTTON" | 13 | 31 |
+| 30     | **main menu: SURVIVAL / STORY / STATS / ARCHIVES** | 16 | 30 |
+| 60     | black with a red chevron motif -- transition wipe, or needs state a forced entry skips | 77 | 30 |
+| 186    | inert at sub 0 | 16 | 31 |
+| 200    | inert at sub 0 | 16 | 31 |
+| 300    | **RESULTS** -- Survival Points, R1 Fast Forward, **REPLAY** slots 001-004 | 67 | 30 |
+| 400    | **RANKING** -- TOTAL / MONTHLY / WEEKLY / DAILY tabs, L1/R1, button bar | 44 | 59 |
+| 500    | reaches sub 10 | 64 | 23 |
+| 600    | **STATS**, cross-fading over the main menu | 103 | 31 |
+| 1000   | reached on its own from 600 | - | - |
+
+The menu layer of this game is essentially working. Screen 300's **REPLAY**
+section is worth noting: Tokyo Jungle records replays of runs, and replay
+playback is the only demo-footage mechanism this binary appears to have. If an
+attract sequence exists, a replay player is a far likelier vehicle than an idle
+timer -- which would also explain the next result.
+
+## No idle counter exists anywhere in the binary
+
+Searched the whole recompiled image, not just the scene machine, for frame
+thresholds matching a typical attract delay:
+
+| constant | frames | at 60 fps | hits |
+|----------|--------|-----------|------|
+| 0x4B0  | 1200  | 20 s  | 0 |
+| 0x708  | 1800  | 30 s  | 0 |
+| 0xE10  | 3600  | 60 s  | 0 |
+| 0x1518 | 5400  | 90 s  | 0 |
+| 0x1C20 | 7200  | 120 s | 0 |
+| 0x2328 | 9000  | 150 s | 0 |
+| 0x2A30 | 10800 | 180 s | 0 |
+
+Zero for every one. Together with `func_0011FF50` (the any-button check) having
+exactly one caller in the entire binary, there is nothing anywhere that counts
+idle time and nothing that could reset such a counter on input.
+
+**Conclusion: this build has no idle-triggered attract mode.** Leaving the title
+or the menu alone will not produce one, and that is a property of the title, not
+a defect in the port. Reaching demo footage, if it is reachable at all, means
+driving the REPLAY player on screen 300 or entering a game mode -- neither of
+which is an attract sequence in the usual sense.
