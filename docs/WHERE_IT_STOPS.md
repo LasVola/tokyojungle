@@ -1774,3 +1774,69 @@ outside `func_001E7404` -- at whatever else could push a scene change.
   because the branch is taken before the timeout comparison it also suppresses
   the timeout.
 * `TJ_CBLOG=1` -- restores the guest-callback log (off by default).
+
+---
+
+# The real wall: the title never loads another file after boot
+
+Forcing the scene machine to each of its screens (`TJ_GOTO=<id>`, below) shows
+the screens are alive and drawing, and shows something more important -- **not
+one of them loads a single asset.**
+
+| screen | sub-states reached | draws | fps |
+|--------|--------------------|-------|-----|
+| 20  "PRESS ANY BUTTON" | 10 → 1        | 13  | 31 |
+| 30  menu               | 1 → 2 → 10 → 3 | 16  | 30 |
+| 60                     | 0 → 5 → 1     | 77  | 30 |
+| 186                    | 0             | 16  | 31 |
+| 200                    | 0             | 16  | 31 |
+| 300                    | 1             | 67  | 30 |
+| 400                    | 1             | 44  | 61 |
+| 500                    | 0 → 10        | 64  | 23 |
+| 600                    | 0 → 10        | 103 | 31 |
+| 1000  (reached on its own from 600)     | 10  | -   | -  |
+
+Screen 600 draws 103 and screen 60 draws 77, against 16 for the menu, so these
+are real screens running real UI. And in every single run, on every screen, the
+files opened are exactly the same seven, all of them from boot:
+
+```
+static.sgd  tj_bus.sgd  17_tj_menu1.sgd  19_tj_menu3.sgd
+39_tj_ranking.sgd  20_tj_result.sgd  05_tj_stage02.sgd
+```
+
+This was checked on **both** filesystem paths. The cellFs HLE layer logs its
+opens already; the lv2 syscall path did not, so `TJ_FSLOG=1` was added to
+`sys_fs_open` (runtime/syscalls/sys_fs.c). It reports **zero** opens, on every
+screen tested. Nothing is being read after boot by any route.
+
+That is the wall. Attract mode, demo playback, stage loading and menu artwork
+all need assets that are never requested, which is consistent with the older
+note in this document that `sgsfile-req-th` sits idle on cond 1 -- *"a request
+that is never submitted, so no worker ever has reason to complete it"*. Every
+screen we can reach renders whatever is already resident and nothing more.
+
+It also reframes the attract-mode question. There is no idle timeout in
+`func_001E7404` (established above, and `func_0011FF50` has exactly one caller
+in the whole binary, so no other subsystem watches for idleness). But even if a
+trigger were found, the demo it starts would have nothing to play: the four demo
+sound banks the game knows about (`tj_menu2_demo`, `tj_stage04/07/08_demo`, at
+indices 303/307/309/310 of the 358-entry bank table at `0x00340128`) are never
+requested, and neither is anything else.
+
+**Next, and this is the thing worth doing:** find where an asset request is
+supposed to be submitted and why it never is. The 358-entry bank table is
+addressed through the TOC slot at `0x003525BC` (`r2-0x6C64`). No compiled-in
+per-screen bank set exists -- searching the ELF for the loaded indices
+(314, 319, 334) and the demo indices (307, 309, 310) as adjacent or nearby
+u16/u32 groups finds nothing -- so the set is assembled at runtime, and finding
+the submitter means following the boot-time requests that *do* work back to
+their caller.
+
+## `TJ_GOTO=<screen id>`
+
+Forces the scene machine to a screen once the menu is up (`screen==30, sub==3`),
+writing the id to `[r31+0x2C]` and zeroing sub-state and timer. Combined with
+`TJ_FASTTITLE=1 TJ_FORCEBTN=1` it reaches any screen in about three minutes
+instead of being gated behind pad input. The 14 ids the machine can set are
+0, 1, 2, 10, 20, 30, 60, 186, 200, 300, 400, 500, 600, 1000.
