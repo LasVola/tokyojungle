@@ -1063,3 +1063,29 @@ we resync too eagerly (the patch is coming, just later than our pass budget), or
 that the patch is written somewhere our walker does not re-read. A write-watch
 on the park address while the title runs distinguishes them: if the word at
 0x01D00160 is rewritten after we have already resynced, it is the former.
+
+### Only one fence is ever published
+
+`GCM_REFLOG=1` on a good run:
+
+    [refq] drained fence 0x0 at getoff=000009A0     -- and that is the only one
+
+One fence, value 0, for the whole run. The main thread's wait
+(`func_001F8C4C`, spinning while `[ctrl+8] != 0`) is a wait for the ref register
+to reach a value, and with a single fence drained there is nothing further for
+it to observe.
+
+So the chain to the current stall is: the walker follows a JUMP to a park the
+title has not patched, resyncs to `put` and discards that segment, and from
+there only one SET_REFERENCE is ever drained. The title keeps submitting work
+(draws do land) but its fences do not reach the ref register, so the frame loop
+never advances past the first one.
+
+**This is RSX FIFO/fence work and is the last identified thing between here and
+a running frame loop.** Concretely, in order:
+
+1. establish whether the park at 0x01D00160 is ever patched (write-watch it) --
+   that decides whether the jump-park resync is too eager for this title;
+2. account for the fences: the title issues more SET_REFERENCE than the one that
+   is drained, so find where the rest are lost -- the resync discarding a
+   segment is the obvious suspect.
