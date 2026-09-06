@@ -831,3 +831,44 @@ likely the load/attract movie being read whole.
 **Next: find what allocates that buffer and stores it at `[0x00BCB7D0]`.** It is
 not the language-selection path (`func_001F06DC` writes a language CODE, 0xE, to
 a different object's +0). Reached only with `SPURS_ANSWER_QUERIES=1`.
+
+### The NULL buffer: a SPURS init that bails with CELL_ESTAT
+
+The buffer `func_00184FC4` reads into is allocated and stored by
+`func_00086178`. Near its end:
+
+    func_0024DCEC(...);                 /* memalign -> r3 */
+    r9 = vm_read32(r2 - 0x6730);        /* = 0x00BCB7D0, the same object */
+    vm_write32(r9 + 0x0, r3);           /* <-- stores the buffer */
+
+`func_00086178` has no callers and no word references: it is a fall-through,
+entered by `func_0008613C` tail-transferring into it. It is a SPURS bring-up --
+`sys_ppu_thread_get_id`, `func_002479F0`, `_cellSpursAttributeInitialize`,
+`cellSpursAttributeEnableSpuPrintfIfAvailable`,
+`cellSpursInitializeWithAttribute`, `_cellSpursEventFlagInitialize`,
+`cellSpursEventFlagAttachLv2EventQueue` -- and every step branches to one shared
+error exit, so any failure skips the allocation entirely.
+
+Measured (probes inserted BEFORE each `if`, never between an `if` and its
+`goto`):
+
+- **without** `SPURS_ANSWER_QUERIES=1`: `func_0008613C`/`func_00086178` are
+  never entered at all;
+- **with** it: both are entered and the init **bails at step 1 with
+  r3 = 0x8001000F = CELL_ESTAT**.
+
+Step 1 is the check straight after `func_002479F0`, whose only calls are
+`sys_ppu_thread_once`, `sys_lwmutex_lock`, `sys_ppu_thread_create`,
+**`_sys_spu_printf_initialize`** and `sys_lwmutex_unlock`. `CELL_ESTAT` is not a
+literal anywhere in `func_002479F0`, so it is propagated from one of those.
+`_sys_spu_printf_initialize` has no implementation in the runtime at all (it
+falls to the unresolved-NID handler, which returns 0), and the SPURS attribute
+call right after it is specifically
+`cellSpursAttributeEnableSpuPrintfIfAvailable` -- so the SPU printf service is
+the obvious suspect, but which of the five actually returns ESTAT is NOT yet
+established.
+
+**Next: find which call in `func_002479F0` returns CELL_ESTAT.** Note the path
+is intermittent (it fires in roughly one run in three even with the knob on), so
+allow several runs per probe. This is a genuinely small question now: five
+candidate calls, one error code, and a probe pattern that works.
