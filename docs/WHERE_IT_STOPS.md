@@ -1638,3 +1638,57 @@ diagnostic `fprintf` added inside `jc_signal_done` was enough to stop the title
 rendering altogether, and several runs were read as "the title did not get
 there" when the real answer was "my probe broke the draw path". A `draws=0`
 reading indicts the probe at least as readily as the title.
+
+## Correction: `draws=32` and `clears=12` are LOG CAPS, not measurements
+
+Both counters that this document and several sessions of notes have used as a
+health signal are capped in the runtime:
+
+```c
+{ static int _d=0; if (_d++ < 32) fprintf(stderr, "[RSX] DRAW_ARRAYS ..."); }
+{ static int _c=0; if (_c++ < 12) fprintf(stderr, "[RSX] CLEAR_SURFACE ..."); }
+```
+
+`draws=32` therefore means "at least 32", not "exactly 32 and then it stopped".
+Every claim of the form "draws stay at 32, so nothing new is being drawn" -- 
+including the one written above about screen 20 -- is unsupported. `draws=0` is
+still meaningful, so the finding that `PS3_VERBOSE=0` suppresses rendering
+outright stands.
+
+Counting `flip` in the logs is just as bad: it matches eight one-time import
+registration lines (`cellGcmSetFlipMode` and friends), not frames.
+`SetPrepareFlip` never appears in these runs at all.
+
+**There is currently no validated measure of ongoing rendering in this port.**
+Establishing one comes before any further claim about what a screen does or does
+not draw.
+
+## Two uncapped signals that ARE real
+
+Sampling what actually repeats in a screen-20 run turns up two failures that no
+capped counter would ever have shown:
+
+```
+ 451952  !!! sgxps3.c : voice command not finished yet (state=3,id=0,1)
+   7467  [evt] port_send(port=1) -> queue id=1
+   7435  [evt] port_send(port=1): queue 1 FULL -> BUSY
+      0  event_queue_receive(q=1 ...)
+```
+
+**Queue 1 has a producer and no consumer.** 7467 sends, zero receives, so it
+fills and 7435 of them are dropped. The only queues the title ever waits on are
+2 and 3 (the SPURS pair, ~102k receives each). Queue 1 is almost certainly the
+`cellAudio` notification queue -- the log shows
+`cellAudioSetNotifyEventQueue(key=0x23A0)` and the title's own
+`audio use queue (4,...)`. Either the title genuinely never drains it, or the
+key-to-id mapping hands the producer a different queue than the one the title
+waits on.
+
+Alongside it, SGX spins 451,952 times on `voice command not finished yet
+(state=3)`. A voice command that never completes and an audio notification that
+never arrives are the same shape of bug, and both are far better leads than
+anything measured off a capped counter.
+
+**Next:** resolve `key=0x23A0` through the queue table and check which id the
+title's audio thread actually waits on, then whether `state=3` clears once the
+notification is delivered.
