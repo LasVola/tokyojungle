@@ -1469,3 +1469,88 @@ skipped value would miss it permanently).
 tick of sub-state 1 for four minutes and see whether it reaches 1610, resets, or
 jumps over it. Note the run has to survive the audio-init race to get there
 (roughly 4 in 6), which is what made this awkward to measure in one pass.
+
+---
+
+# The early-boot audio failure is two bugs, and only one was mine to blame
+
+Roughly half of all runs die early: two or three files opened, no draws, and
+
+```
+*** sgxbus.c(934) : failed to regist module
+*** sgxbus.c(1634) : unknown module name (tverb)
+```
+
+Chasing that turned up **two separate causes**, and it is worth keeping them
+apart because the first one masqueraded as the second for several sessions.
+
+## 1. A deterministic one: the VFS root (fixed)
+
+With `PS3_VFS_ROOT` unset the cellFs root stays `"."`, so every asset open
+resolves a level too high and misses outright:
+
+```
+[cellFs] Open: fopen('.\USRDIR\data\snd\static.sgd', 'rb') failed: No such file
+```
+
+Losing the sound bank makes SGX tear itself down and take the boot with it.
+This is fully deterministic and is now gone: `src/main.cpp` derives the root
+from the ELF path, so `input/USRDIR/EBOOT.elf` yields `input`, and the env var
+still overrides. `PS3_HDD0_ROOT` is defaulted alongside it. Neither is
+required any more; `RSX_LIVE_DRAW=1` still is, and stays explicit.
+
+## 2. A real intermittent one: a short reply count (open)
+
+The remaining failure is **not** environmental. With the full documented
+environment, four consecutive runs of the identical command gave two passes and
+two failures. An earlier draft of this section blamed the environment for both
+bugs; that was wrong, and it was wrong because three unlucky runs of a coin
+flip look exactly like a deterministic failure. Three samples cannot tell a
+50% process from a broken one.
+
+Probing the guest side pins it precisely. `func_00202214` registers each DSP
+module by calling `func_00201D38`, then checks that the returned count equals
+the module's expected size. Eight modules register in sequence; a passing run
+matches on all eight, and a failing run comes up short on exactly one:
+
+```
+PASS  want=76 got=76   want=1216 got=1216  want=88 got=88   want=476 got=476
+      want=628 got=628 want=408 got=408    want=200 got=200 want=364 got=364
+
+FAIL  want=76 got=76   want=1216 got=1216  want=88 got=88   want=476 got=284
+FAIL  ... seven matches ...                                  want=364 got=272
+```
+
+Which module falls short varies between runs, which is what makes it a race
+rather than a parse bug. The reply values themselves are *not* the problem: the
+SPU query answers logged at the completion-event boundary (`[QANS]`, commands
+0x105/0x106) are byte-identical between a passing and a failing run, both
+delivering a bus count of 1. So the answers are right and something downstream
+of them stops early.
+
+**Next:** instrument the two `func_00201770` call sites inside `func_00201D38`
+(the per-query submit-and-wait, invoked with r7=7 and r7=8) and log which
+iteration returns short. That names the query that loses its reply.
+
+## The title-screen timeout does fire
+
+Settled, with a probe at the tick site and a nine-minute run: the sub-state-1
+counter reaches `0x64A` (1610) exactly — 19 samples logged in 1600..1620 — and
+the scene machine advances **1 → 100**. Equality rather than `>=` was not the
+problem, and nothing resets the counter. It takes ~8 minutes only because that
+path ticks at ~3.3/sec rather than per-frame at 60.
+
+Sub-state 100 dispatches to `loc_001E872C`, which calls the fade helper
+`func_001D0738(obj, 100, timer)` every tick and advances only when it returns
+non-zero. Reading that helper: for sub-state 100 it returns 1 **only on the
+tick where `timer == 0`**, hiding layers 0xC3..0xC7 and 0xB0/0xB1 on the way
+out; on every later tick it returns 0 immediately. On success the scene moves
+to **screen 20, sub-state 10** — a different screen, which is the attract
+candidate.
+
+So the whole transition hinges on the first sub-state-100 tick seeing
+`timer == 0`. Every site that sets sub-state 100 does zero the timer (the one
+that appears not to, `loc_001EB7B0`, zeroes it at its jump target
+`loc_001EB048`), yet the observed run sat at 100 indefinitely. A probe on the
+return value of that call is in `generated/ppu_recomp_000.cpp` and is the next
+measurement.

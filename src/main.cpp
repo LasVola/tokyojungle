@@ -253,8 +253,67 @@ int main(int argc, char* argv[])
     // where this title's data actually lives. Map the disc and hdd game roots
     // onto USRDIR/ under the same VFS root the syscall layer uses.
     {
+        /* PS3_VFS_ROOT was effectively mandatory: without it the root stayed
+         * "." and every asset open resolved a level too high, e.g.
+         *
+         *     fopen("./USRDIR/data/snd/static.sgd") : no such file
+         *
+         * Losing the sound bank makes SGX report "failed to regist module",
+         * tear itself down, and take the boot with it. That looked like an
+         * intermittent audio-init race; it was a missing env var. Derive the
+         * root from the ELF path instead -- the documented invocation,
+         * input/USRDIR/EBOOT.elf, yields "input" -- and let the env override. */
+        static char vfs_buf[1024];
         const char* vfs = getenv("PS3_VFS_ROOT");
-        if (!vfs || !*vfs) vfs = ".";
+        if (!vfs || !*vfs) {
+            snprintf(vfs_buf, sizeof vfs_buf, "%s",
+                     (argc > 1) ? argv[1] : "input/EBOOT.ELF");
+            for (int strip = 0; strip < 2; strip++) {
+                char* sep = NULL;
+                for (char* q = vfs_buf; *q; q++)
+                    if (*q == 0x2F || *q == 0x5C) sep = q;
+                if (!sep) { vfs_buf[0] = '.'; vfs_buf[1] = '\0'; break; }
+                *sep = '\0';
+                /* The EBOOT filename always goes; the second pass happens only
+                 * when the directory it sat in is USRDIR. */
+                size_t n = strlen(vfs_buf);
+                if (strip || n < 6) break;
+                const char* tail = vfs_buf + n - 6;
+                const char* want = "usrdir";
+                int same = 1;
+                for (int k = 0; k < 6; k++) {
+                    char c = tail[k];
+                    if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+                    if (c != want[k]) { same = 0; break; }
+                }
+                if (!same) break;
+            }
+            vfs = vfs_buf[0] ? vfs_buf : ".";
+        }
+        printf("[TJ] VFS root: %s\n", vfs);
+
+        /* PS3_HDD0_ROOT was the other half of the same trap. The syscall-side
+         * resolver reads it once, lazily; with it unset the title's SGX layer
+         * cannot find the installed-data tree and reports
+         *
+         *     *** sgxbus.c(934) : failed to regist module
+         *
+         * after which "tverb" is an unknown module and audio bring-up stops
+         * loading banks -- the boot then sits at three files and no draws.
+         * That read as an intermittent audio-init race for several sessions;
+         * it was reproducible the whole time, just env-dependent. Point it at
+         * the in-repo tree by default, next to the VFS root. */
+        if (!getenv("PS3_HDD0_ROOT")) {
+            static char hdd0_buf[1100];
+            char parent[1024];
+            snprintf(parent, sizeof parent, "%s", vfs);
+            { char* sep = NULL;
+              for (char* q = parent; *q; q++) if (*q == 0x2F || *q == 0x5C) sep = q;
+              if (sep) *sep = 0; else { parent[0] = '.'; parent[1] = 0; } }
+            snprintf(hdd0_buf, sizeof hdd0_buf, "PS3_HDD0_ROOT=%s/gamedata/dev_hdd0", parent);
+            putenv(hdd0_buf);
+            printf("[TJ] hdd0 root: %s\n", hdd0_buf + 14);
+        }
         cellfs_set_root_path(vfs);
         /* Map the whole PS3_GAME dir, not just USRDIR: the installer also
          * stats /dev_bdvd/PS3_GAME/ICON0.PNG and friends, and a USRDIR-only
