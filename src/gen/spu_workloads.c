@@ -27,6 +27,8 @@ extern void tj_socjobspu_func_00000000(spu_context*);
 extern void tj_socjobspu_recomp_register(void);
 extern void tj_dspjobspu_func_00000000(spu_context*);
 extern void tj_dspjobspu_recomp_register(void);
+extern void j78FEA84E1C23BB5C_spu_func_00000000(spu_context*);
+extern void j78FEA84E1C23BB5C_spu_recomp_register(void);
 extern void tj_j1B6BDAC375C5438Dspu_func_00000000(spu_context*);
 extern void tj_j1B6BDAC375C5438Dspu_recomp_register(void);
 extern void tj_j48AF2BC79A72CB50spu_func_00000000(spu_context*);
@@ -61,6 +63,13 @@ void tj_spu_register_all(void)
     spu_begin_image(2);
     tj_dspjobspu_recomp_register();
     spu_workload_register_img(0xFDFFAAC1BCD5352EULL, tj_dspjobspu_func_00000000, 2, "dspjob");
+
+    /* spujob_78FEA84E1C23BB5C_6352.bin -- the workload that sets the SPURS
+     * event flag the boot thread waits on. Without it every wait on that
+     * flag is a real deadlock (dispatch MISS, job silently skipped). */
+    spu_begin_image(13);
+    j78FEA84E1C23BB5C_spu_recomp_register();
+    spu_workload_register_img(0x78FEA84E1C23BB5CULL, j78FEA84E1C23BB5C_spu_func_00000000, 13, "j78FEA84E");
 
     /* spujob_1B6BDAC375C5438D_13840.bin */
     spu_begin_image(3);

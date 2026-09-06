@@ -40,7 +40,18 @@ extern uint8_t* vm_base;
 
 static uint32_t g_heap_base  = 0x02000000;  // Start of heap region
 static uint32_t g_heap_ptr   = 0x02000000;  // Current allocation pointer
-static uint32_t g_heap_end   = 0x08000000;  // 96 MB heap space
+/* 0x02000000-0x0E000000 = 192 MB. This is a BUMP allocator that never reuses a
+ * freed block (see hle_malloc below), so the ceiling is not "how much the title
+ * needs live at once" but "how much it ever allocates". 96 MB was enough only
+ * while the title stalled early; once its audio came up and it got as far as
+ * loading sound banks it ran dry and every later allocation returned 0:
+ *
+ *   [HLE] ERROR: heap exhausted! (requested 65536 bytes)   x37, then a stall
+ *
+ * 0x0E000000 keeps clear of the RSX staging area higher up while giving the
+ * bump pointer twice the room. ponytail: raising the ceiling, not adding reuse
+ * -- a real allocator is the fix if a title outruns this too. */
+static uint32_t g_heap_end   = 0x0E000000;  // 192 MB heap space (bump, no reuse)
 static int      g_heap_inited = 0;
 
 void hle_heap_init() {
