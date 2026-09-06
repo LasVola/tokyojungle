@@ -1434,3 +1434,38 @@ a different branch of that 716-line driver than the `> 2999` one used by 0xC8.
 Next: block-profile `func_001D0738` while it is running screen 1 (the profiler
 is 28 blocks there, and the id arrives in r4) and find that screen's completion
 test the same way `loc_001D107C` was found for 0xC8.
+
+### Sub-state 1 is the title screen: it polls the pad and counts toward a timeout
+
+`loc_001E8B7C` (sub-state 1) runs the same screen driver with **screen id 1**,
+and its still-running path `loc_001E9320` is a title/press-start screen:
+
+    r0 = vm_read8(r24 + 0xE);          /* pad state byte */
+    if (r0 != 0) goto loc_001E9824;    /* input held -> elsewhere */
+    r9 = vm_read8(r24 + [TOC+0x8CC]);  /* another pad byte */
+    if (r9 != 0) goto loc_001E9824;
+    r7 = [r31+0x34];
+    cmp(r7, 0x64A);                    /* 1610 */
+    if (r7 == 0x64A) goto loc_001EB4F4;  /* timeout reached -> advance */
+    loc_001E9354: [r31+0x34] = r7 + 1;   /* otherwise tick */
+
+and screen 1's own completion inside the driver (`loc_001D0DA8`) is
+`if (counter > 0x68F /* 1679 */)`.
+
+**So this is the title screen waiting for either a button or a timeout -- and
+the timeout is what leads onward.** Measured: the pad byte reads 0x00 (correct,
+nothing held) and the counter DOES climb --
+
+    [PAD] r24=0x00BCB7F4 [r24+0xE]=0x00 counter=0
+    ... counter=40 ... 80 ... 120 ... 160        (~7 ticks/sec)
+
+At that rate 1610 is about four minutes. But an eight-minute run with the
+sub-state tracer never left sub-state 1, so the two measurements are in tension:
+either the counter is being reset somewhere before it arrives, or it steps past
+1610 without hitting it exactly (the test is EQUALITY, not >=, so a single
+skipped value would miss it permanently).
+
+**That is the open question, and it is a small one:** log `[r31+0x34]` on every
+tick of sub-state 1 for four minutes and see whether it reaches 1610, resets, or
+jumps over it. Note the run has to survive the audio-init race to get there
+(roughly 4 in 6), which is what made this awkward to measure in one pass.
