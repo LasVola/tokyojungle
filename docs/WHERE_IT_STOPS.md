@@ -872,3 +872,49 @@ established.
 is intermittent (it fires in roughly one run in three even with the knob on), so
 allow several runs per probe. This is a genuinely small question now: five
 candidate calls, one error code, and a probe pattern that works.
+
+### RESOLVED: sys_ppu_thread_once was unimplemented -- audio now comes up
+
+The `CELL_ESTAT` traced to `sys_ppu_thread_once`, which had **no implementation
+in the runtime at all**. It fell through to the unresolved-NID handler, which
+returns `CELL_OK` -- the worst possible answer for this primitive, because the
+caller is told its one-time initialiser ran when it never did. The SPURS
+bring-up was therefore abandoned at its first state check, and with it the
+`memalign` that fills the buffer pointer at `[0x00BCB7D0]`, which is why the
+later load read into NULL.
+
+Implemented in ps3recomp #136, with proper blocking semantics: three states in
+the guest word (0 not run, 2 running, 1 done) so a second caller WAITS rather
+than sailing past while the initialiser is still in flight. That distinction
+matters -- the non-blocking first cut left the success rate at 3 in 6; blocking
+took it to 5 in 6.
+
+**Results.** With no env knobs at all:
+
+- audio actually initialises. The title goes from opening **2** files for the
+  whole run to **7**: `static.sgd`, `tj_bus.sgd`, and its `17_tj_menu1`,
+  `19_tj_menu3`, `39_tj_ranking`, `20_tj_result`, `05_tj_stage02` sound banks;
+- `sgxbus.c` errors clear in 4 of 6 runs (0 of 6 before);
+- the TOC corruption is **gone** -- a write-watch on `0x0035AA80` records zero
+  hits, including on runs that get all the way through;
+- the tick path executes for the first time: `func_0020E93C`, `func_0020B4A8`
+  and `func_0020A958` all run, where the latter two had never been entered.
+
+Because the corruption is gone, ps3recomp #135's `SPURS_ANSWER_QUERIES` gate was
+removed -- answering the query is now the default.
+
+### Where it stops now
+
+`func_0020A958` is entered **once**, so the SGX tick is incremented at most
+once and the main thread still waits in `func_002139CC` for it to pass 3. The
+audio thread's outer loop `func_0020E93C` runs a single lap and then stays down
+inside the write loop, so the tick cannot reach 4.
+
+Two things to chase from here:
+
+1. **why `func_0020E93C`'s outer loop does not iterate.** It reaches
+   `func_0020B4A8` (the tick) now, so this is much closer than it was -- the
+   loop runs once instead of never.
+2. **the remaining 1-in-3 race**: some runs still fail at `sgxbus.c(934)` with
+   the once-initialiser never running at all, which suggests a second ordering
+   problem earlier than the one `sys_ppu_thread_once` fixed.

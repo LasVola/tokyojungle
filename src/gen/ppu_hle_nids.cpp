@@ -1020,6 +1020,7 @@ extern "C" {
     void _sys_toupper(void);
     void _sys_tolower(void);
     void sys_lwmutex_create(void);
+    void sys_ppu_thread_once(void);
     void sys_lwmutex_lock(void);
     void sys_lwmutex_trylock(void);
     void sys_lwmutex_unlock(void);
@@ -2065,6 +2066,7 @@ extern "C" void ppu_hle_register_all(void) {
     ps3_hle_register(0xEEF75113u, "_sys_toupper", (void*)_sys_toupper);
     ps3_hle_register(0x4B2F301Au, "_sys_tolower", (void*)_sys_tolower);
     ps3_hle_register(0x2F85C0EFu, "sys_lwmutex_create", (void*)sys_lwmutex_create);
+    ps3_hle_register(0xA3E3BE68u, "sys_ppu_thread_once", (void*)sys_ppu_thread_once);
     ps3_hle_register(0x1573DC3Fu, "sys_lwmutex_lock", (void*)sys_lwmutex_lock);
     ps3_hle_register(0xAEB78725u, "sys_lwmutex_trylock", (void*)sys_lwmutex_trylock);
     ps3_hle_register(0x1BC200F4u, "sys_lwmutex_unlock", (void*)sys_lwmutex_unlock);
