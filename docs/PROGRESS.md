@@ -73,9 +73,19 @@
 - [ ] sceNpCommerce2 stubs (DLC — 16 functions)
 - [ ] Remaining PSN stubs
 
-## Phase 9: Gameplay — NOT STARTED
+## Phase 9: Gameplay — IN PROGRESS
 
-- [ ] Title screen loads
+- [x] **Title screen loads and renders** (2026-09-05) — animated clouds, logo and
+      "PRESS ANY BUTTON" at 1280x720. See the hero gif in the README.
+      Getting here took five runtime fixes, all upstreamed to ps3recomp:
+      cellSail completion callbacks (#133), a write-watch that resolves guest
+      functions (#134), SPURS carrying the SPU's answer to a job query (#135),
+      `sys_ppu_thread_once` (#136, it was unimplemented and reported success
+      without running the initialiser), and a FIFO resync that no longer
+      swallows fences (#137) -- plus, title-side, the VFS root doubling that
+      hid the sound banks, a 96 MB -> 192 MB bump-heap ceiling, and lifting the
+      one SPU workload that was a dispatch MISS.
+- [ ] Attract mode (title screen times out to it -- see docs/WHERE_IT_STOPS.md)
 - [ ] Survival Mode playable
 - [ ] Story Mode playable
 - [ ] Save/Load working
