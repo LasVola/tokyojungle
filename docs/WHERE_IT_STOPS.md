@@ -1840,3 +1840,33 @@ writing the id to `[r31+0x2C]` and zeroing sub-state and timer. Combined with
 `TJ_FASTTITLE=1 TJ_FORCEBTN=1` it reaches any screen in about three minutes
 instead of being gated behind pad input. The 14 ids the machine can set are
 0, 1, 2, 10, 20, 30, 60, 186, 200, 300, 400, 500, 600, 1000.
+
+## Who does open the boot files, and who never asks for anything else
+
+A guest backtrace on `cellFsOpen` (`TJ_FSBT=1`, added to `libs/filesystem/cellFs.c`
+in the runtime worktree, uncommitted and env-gated) names the chain:
+
+```
+[FSBT] 0025F8C0 0025D9C0 00232F40 0022FFC8 00235448 00230D80
+```
+
+That is the SGX bank loader, and it is the **only** thing in the title that ever
+opens a file. All seven opens are `.sgd` sound banks. The subsystem itself is
+healthy and correctly configured -- it reports
+
+```
+sgsfile : arg '/dev_hdd0/game/NPUA80523/USRDIR'
+sgsfile : boot device '5'(/dev_hdd0/game/NPUA80523/)
+```
+
+and the game imports only `cellFsOpen/Read/Lseek/Stat/Close` -- no async API and
+no second route. `cellFsOpen` logs every call including failures, so this is not
+requests being refused: **nothing else in the game ever asks for a file.**
+
+The failure is therefore upstream of the filesystem, in whatever should submit
+asset requests, and it is one bug standing between this port and demo playback,
+stage loading and menu artwork alike. Both diagnostics used to establish that
+(`TJ_FSLOG` in `runtime/syscalls/sys_fs.c`, `TJ_FSBT` in
+`libs/filesystem/cellFs.c`) are left in the runtime worktree, env-gated and off
+by default. That tree is shared with other sessions -- check `git status` there
+before assuming it is clean.
