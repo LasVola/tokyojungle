@@ -1247,3 +1247,23 @@ Order to attack from here:
    `GCM_SCANREF=1` lists SET_REFERENCE in the ring, `GCM_REFLOG=1` lists what is
    published; diff them.
 3. **the 2-in-6 audio-init race** (files=2, no draws), unchanged.
+
+### Tested: the SAIL START bit is NOT the only gate
+
+The post-Boot path does run -- `func_00183CA0`, `func_00183C48` and
+`func_001F6EDC` are all entered -- so the title is not stuck before the point
+where it would ask SAIL to start. It simply never asks.
+
+Faking the answer (report CALL_COMPLETED for START right after Boot) was tried
+as a diagnostic and does NOT unlock the frame loop:
+
+    AUTOSTART: draws=32 clears=12 files=7   flips: 9, and static across 75 s
+
+Same 32 draws and 12 clears as without it, and flips stay put. So the
+START-completed bit is something the title waits on, but supplying it is not
+sufficient -- reverted, the value was the negative result.
+
+That means the missing piece is upstream of Start: the title has its adapters
+set and its player booted, and something it checks before calling OpenStream is
+not satisfied. Worth noting `cellSailPlayerOpenStream` is still a stub in the
+runtime that opens nothing, so even reaching it would not play anything yet.
