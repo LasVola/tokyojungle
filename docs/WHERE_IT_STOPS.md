@@ -1000,3 +1000,33 @@ everything between, so the fence the title is waiting on is never published.
 libs/video/cellGcmSys.c, dumped on a bad branch) -- that dump names the command
 that consumed the wrong count. This is RSX command-decode work and is
 independent of everything above.
+
+### The RSX fence never clears because `get` is outside the ring
+
+Chasing the ref wait further. The title maps its FIFO ring:
+
+    MapEaIoAddress(ea=0x02300000, io=0x0E000000, size=0x100000)
+
+so the ring is IO `0x0E000000..0x0E100000`. But the walker gets stuck at
+
+    [cellGcmSys] FIFO resync 0x01D00160 -> put 0x000019F0
+
+and IO `0x01D00160` is **not inside that mapping**. `get` has left the ring, so
+it can never reach `put`, no fences are published, and the main thread's spin on
+`[ctrl+8]` never ends. This is the failure `cellGcmSys.c` already documents for
+this exact title -- it previously left the ring for IO `0x00F00000`.
+
+Note the resync that fires is the **stuck-get** one ("get has not moved across
+several passes"), not the unmapped-JUMP one, so the bad-branch reporter never
+runs. `gcm_fifo_dump_around` was only wired to the JUMP path; it is now wired to
+the stuck path as well.
+
+That dump comes back EMPTY, which is itself the finding: the trace ring holds
+the words the walker consumed, and it has none. **The walker never consumed a
+single word in these runs** -- `get` is already outside the ring before any
+command is decoded, rather than being walked out of it by a mis-counted batch.
+
+So the question is narrower than "which method has the wrong argument count":
+**how does `get` come to be 0x01D00160 before any FIFO word is consumed?** Worth
+checking what seeds `get` at init against what the title expects, and whether
+anything writes the control block's `get` field behind the walker's back.
