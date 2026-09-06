@@ -1554,3 +1554,87 @@ that appears not to, `loc_001EB7B0`, zeroes it at its jump target
 `loc_001EB048`), yet the observed run sat at 100 indefinitely. A probe on the
 return value of that call is in `generated/ppu_recomp_000.cpp` and is the next
 measurement.
+
+---
+
+# The scene machine runs past the title. The wall is now an input wait.
+
+Traced with one probe at the outer dispatcher (`loc_001E75D8`) that logs screen
+id (`[r31+0x2C]`) and sub-state (`[r31+0x30]`) on any change. Reproducible
+across runs:
+
+```
+screen=0   sub= 1 → 2 → 3 → 6 → 7 → 10 → 12 → 100 → 101
+screen=10  sub= 0 → 200 → 1 → 100        the title screen, then its timeout
+screen=20  sub= 10 → 1                    and there it sits
+```
+
+**The title timeout fires and hands off correctly.** Sub-state 1 counts to
+`0x64A` (1610) exactly, and the fade helper does what a static read of it
+predicted:
+
+```
+[FADE] sub=100 timer=0 ret=1
+```
+
+`func_001D0738(obj, 100, timer)` returns 1 on the first tick where `timer == 0`,
+hides layers 0xC3..0xC7 and 0xB0/0xB1, and sets screen 20, sub-state 10. Nothing
+here is broken. An earlier note called sub-state 100 the wall; it is not, and the
+reason that looked true is worth remembering: the `[SUB]` probe used to observe
+it lived in the title's *own* sub-dispatcher (`loc_001E7E08`), which the outer
+dispatcher stops routing to the moment the screen id changes. The probe went
+quiet and I read that as the machine stopping.
+
+## What screen 20 is waiting for
+
+573 basic-block counters across `func_001E7404`, armed only while screen == 20,
+name the live path in a single run:
+
+```
+loc_001E77BC → 7840 → 784C → 77EC → 7600 → 7610 → 76E8 → 76EC → 7470
+   → 7544 → 7864 → 8118 → 97B8 → 97E8 → 8144 → 75D8 → 93A4
+```
+
+`loc_001E93A4` is the screen-20 sub-state-1 tick. It advances the timer, then
+calls `func_0011FF50` and returns to the frame end (`loc_001E8144`) whenever that
+returns 0. `loc_001E9430`, the block past the gate, never executes.
+
+`func_0011FF50` reads sixteen bytes at `[r2-0x2400]` and returns 1 if **any** of
+them is non-zero. It is an "is any button down" check. Screen 20 is idling on
+input, not deadlocked -- forcing that function to return 1 walks straight on:
+
+```
+screen=20 sub=1 → 2 → screen=30 sub=1 → 2 → 10 → 3
+```
+
+So the scene machine downstream of the title is healthy for at least two more
+screens. **Open question: whether screen 20 is attract mode itself (idling with
+nothing to show because its content is never requested) or a press-start screen
+that sits between the title and the menu.** It opens no files the title had not
+already opened, and draws stay at 32, so whatever it is meant to display is not
+being asked for. That is the next thing to settle -- and settling it decides
+whether attract mode is a missing asset request or a screen further along.
+
+## Diagnostic knobs added
+
+* `TJ_FASTTITLE=1` -- title times out after 40 ticks instead of 1610. Turns a
+  ten-minute wait per experiment into about two minutes. The transition is
+  otherwise identical.
+* `TJ_FORCEBTN=1` -- `func_0011FF50` returns 1, i.e. a button is always down.
+* `TJ_CBLOG=1` -- re-enables the guest-callback log, **off by default now**. It
+  used to be unconditional, with an `fflush` per callback: a 13-minute run wrote
+  a 1 GB stderr log and took the disk down to 3.4 GB free. The flush also sat in
+  a path whose timing decides the audio race.
+
+## A measurement trap worth recording
+
+`PS3_VERBOSE=0` -- which the repro line earlier in this document sets --
+suppresses rendering entirely: 3 clears, 0 draws, and the scene machine never
+entered, even on runs whose audio init succeeds. Two eleven-minute runs were
+spent before noticing. Measure behaviour with verbose ON.
+
+Equally: **instrumentation on the SPURS completion path is not free.** A
+diagnostic `fprintf` added inside `jc_signal_done` was enough to stop the title
+rendering altogether, and several runs were read as "the title did not get
+there" when the real answer was "my probe broke the draw path". A `draws=0`
+reading indicts the probe at least as readily as the title.

@@ -117,9 +117,17 @@ static void tj_guest_caller(uint32_t opd_addr,
     s_cb_sp -= 0x1000;
     if (s_cb_sp < 0xD0410000) s_cb_sp = 0xD04F0000;
 
-    fprintf(stderr, "[TJ:guest-cb] opd=0x%08X func=0x%08X r3=0x%llX\n",
-            opd_addr, func, (unsigned long long)a0);
-    fflush(stderr);
+    /* This logged EVERY guest callback, unbuffered, with an fflush per call.
+     * A 13-minute run wrote a 1 GB log and nearly filled the disk, and the
+     * flush sits right in the middle of a path whose timing already decides a
+     * race. Off unless TJ_CBLOG is set. */
+    { static int cblog = -1;
+      if (cblog < 0) { const char* e = getenv("TJ_CBLOG"); cblog = (e && *e && *e != '0') ? 1 : 0; }
+      if (cblog) {
+        fprintf(stderr, "[TJ:guest-cb] opd=0x%08X func=0x%08X r3=0x%llX\n",
+                opd_addr, func, (unsigned long long)a0);
+        fflush(stderr);
+      } }
 
     ps3_indirect_call(&cb_ctx);
 
