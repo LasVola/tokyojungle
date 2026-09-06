@@ -918,3 +918,54 @@ Two things to chase from here:
 2. **the remaining 1-in-3 race**: some runs still fail at `sgxbus.c(934)` with
    the once-initialiser never running at all, which suggests a second ordering
    problem earlier than the one `sys_ppu_thread_once` fixed.
+
+### FIRST PIXELS: the title renders
+
+Three more things, and the title draws for the first time.
+
+**1. The bump heap ran dry.** Once audio came up the title allocates far more,
+and the 96 MB never-reused bump heap hit its ceiling:
+
+    [HLE] ERROR: heap exhausted! (requested 65536 bytes)   x37, then a stall
+
+Raised to 192 MB (0x02000000-0x0E000000). The log went from frozen at 1122
+lines to growing steadily.
+
+**2. A SPURS event flag that nothing set.** With the heap fixed the boot thread
+reached `cellSpursEventFlagWait` on flag `0x005F7600`, pattern 0x0001, "waiting
+for an SPU workload to cellSpursEventFlagSet it" -- the same shape as YDKJ's
+known blocker. `SPURS_EF_FORCE=1` got past it and produced the session's first
+DRAW, confirming it was the gate; `SPURS_EF_FORCE=<n>` was added so the fake
+does not cost ten seconds a wait (32 draws in 29 s instead of 7 in 130 s).
+
+**3. The reason nothing set it: a dispatch MISS.** 218 per run --
+
+    [spurs-job] dispatch MISS fp=0x78FEA84E1C23BB5C size=6352
+
+exactly one image, and it is the workload that sets that flag. Captured with
+`SPU_DUMP_MISS`, lifted (`find_spu_functions.py` then `spu_lifter.py`, 114
+functions, 87 % coverage) and registered as image 13 in
+`src/gen/spu_workloads.c`.
+
+**Current state -- no env knobs at all, 8 runs:**
+
+    6/8 reach audio init (7 files loaded), draws=1, dispatch MISS=0,
+    heap exhausted=0
+
+So the fake is no longer needed: the real SPU workload runs, the event flag is
+set for real, and the title renders. This is the first rendering Tokyo Jungle
+has done in this port.
+
+### Still to do
+
+Attract mode is NOT reached. The title draws once and settles rather than
+running a frame loop -- `flips` stays at 8. Two things to chase:
+
+1. **why it stops after the first draw.** With `SPURS_EF_FORCE=3` it managed 32
+   draws and 12 clears before plateauing, so more of the pipeline works than one
+   draw suggests; something is gating the frame loop rather than rendering
+   itself.
+2. **the remaining 2-in-8 race** where audio init does not happen at all and the
+   run only opens 2 files. `sys_ppu_thread_once`'s blocking semantics took this
+   from 6-in-6 failing to about 2-in-8; whatever is left is a second ordering
+   problem earlier in the sequence.
