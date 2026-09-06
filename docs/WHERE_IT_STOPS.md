@@ -1216,3 +1216,34 @@ Two things left, in order:
 2. **the 2-in-6 audio-init race** (files=2, no draws at all), unchanged from
    before -- an ordering problem earlier than the one `sys_ppu_thread_once`
    fixed.
+
+### State after the fence fix: fences flow, one flip, waiting on SAIL START
+
+With #137 in, a good run drains **353 fences** and their values count up
+monotonically (…0xF8, 0xF9, 0xFA … 0xFF), so the fence pipeline is genuinely
+working now rather than publishing a single stuck value.
+
+But the title issues each flip call exactly **once** --
+`cellGcmSetFlipMode`, `cellGcmSetFlipHandler`, `cellGcmSetFlipCommand`,
+`cellGcmResetFlipStatus`, `cellGcmGetFlipStatus` -- so it is not running a
+present loop. It is looping on something else and periodically returning to two
+places: `func_001F8C4C` (cellGcmFinish) and `func_001818EC`, the SAIL poll.
+
+That SAIL poll is waiting on **mask 0x100**, and from the handler decoded at the
+top of this document that bit is set by `major=2, minor=10` -- CALL_COMPLETED for
+**START**. The title has called `cellSailPlayerBoot` and nothing since: no
+`OpenStream`, no `Start`. So it is waiting for a start it has not requested,
+which means something between Boot and Start is still not happening.
+
+This matters for the goal specifically: Tokyo Jungle's attract sequence is a
+movie, so SAIL is not incidental here -- it is the thing that has to work.
+
+Order to attack from here:
+
+1. **why the title never progresses Boot -> OpenStream -> Start.** It has the
+   graphics and sound adapters set and the player booted; find what it checks
+   between those and the OpenStream call.
+2. **more missed fences** -- the main thread still returns to cellGcmFinish.
+   `GCM_SCANREF=1` lists SET_REFERENCE in the ring, `GCM_REFLOG=1` lists what is
+   published; diff them.
+3. **the 2-in-6 audio-init race** (files=2, no draws), unchanged.
