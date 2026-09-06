@@ -1172,3 +1172,47 @@ drives that ring through a second control block we are not reading. Both are
 checkable: log every JUMP/CALL target against the two ring ranges
 (`GCM_RECDBG=1` already prints `[JMP]`), and check whether anything writes a
 `put` other than the one at `GCM_CONTROL_GUEST_ADDR`.
+
+### FIXED: the resync was swallowing the fence
+
+Scanning the ring for `NV406E_SET_REFERENCE` settled it. There are TWO:
+
+    io=000009A0 w=00040050 count=1 arg=00000000
+    io=000019E8 w=00040050 count=1 arg=00000001
+
+The walker parked before the second, and the resync to `put=0x19F0` stepped
+straight over it -- so `ref` stayed 0 while the title spun for `ref==1`.
+
+A resync jumping `get` to `put` is right for liveness, and losing the draws in
+between is survivable. Losing a FENCE is not: nothing will ever publish that
+value again and the title deadlocks with the FIFO idle. Fixed in ps3recomp #137
+by sweeping the skipped range and queueing any fences before jumping. The sweep
+must start from the last offset consumed BELOW put -- where the walker gave up
+may be a park in another IO region, which says nothing about ring progress
+(getting that wrong rescued nothing on the first attempt).
+
+**Result, no diagnostic knobs, 6 runs:**
+
+    4/6 good: files=7  draws=32  clears=12  rescued=8
+    2/6 race: files=2  draws=0
+
+Draws went 1 -> 32 and clears 5 -> 12, and the 32 draws that previously needed
+`SPURS_EF_FORCE=3` now happen on their own.
+
+### Where it stops now
+
+Still no page flips (`flips` stays at 8), so the frame loop is not running. The
+main thread now alternates between `func_001F8C4C` (cellGcmFinish, ~150 sleeps
+per sample) and `func_001818EC` (the SAIL ready-flag poll) -- so it is getting
+through work and coming back to a fence wait, rather than being stuck in one
+place.
+
+Two things left, in order:
+
+1. **more fences are still being missed.** The rescue recovers 8 per run and the
+   title still lands back in cellGcmFinish. Same technique applies: scan the
+   ring for SET_REFERENCE, compare against what `GCM_REFLOG` publishes, and find
+   which ones are lost and where.
+2. **the 2-in-6 audio-init race** (files=2, no draws at all), unchanged from
+   before -- an ordering problem earlier than the one `sys_ppu_thread_once`
+   fixed.
