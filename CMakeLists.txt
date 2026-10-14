@@ -255,6 +255,15 @@ add_executable(tokyojungle
     ${GENERATED_SOURCES}
 )
 
+# Window/taskbar/exe icon from your own game files: input/tokyojungle.ico (not in
+# the repo; e.g. converted from the title's ICON0.PNG). Skipped when absent.
+if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/input/tokyojungle.ico")
+    enable_language(RC)
+    file(WRITE "${CMAKE_BINARY_DIR}/tokyojungle_icon.rc"
+         "1 ICON \"${CMAKE_SOURCE_DIR}/input/tokyojungle.ico\"\n")
+    target_sources(tokyojungle PRIVATE "${CMAKE_BINARY_DIR}/tokyojungle_icon.rc")
+endif()
+
 target_include_directories(tokyojungle PRIVATE
     # Our bridge header and game-specific code
     ${CMAKE_SOURCE_DIR}/src

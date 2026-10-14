@@ -165,6 +165,7 @@ $info.EnvironmentVariables.Remove('TJ_FLIP_TIMELINE')
 $info.EnvironmentVariables.Remove('TJ_FLIP_PERF')
 $info.EnvironmentVariables.Remove('TJ_DRAW_COST_TRACE')
 $info.EnvironmentVariables.Remove('TJ_VERBOSE_STATS')
+$info.EnvironmentVariables.Remove('TJ_CONTROLS_FILE')
 # Per-second diagnostic lines (label-early, non-3D flush, GPU reuse, loader waits) only for traced runs.
 if ($FrameDeliveryTrace -or $GuestPerf -or $PresentWorkTrace -or $ShaderPhaseTrace -or $FifoDispatchTrace -or $TransferPhaseTrace -or $DrawCostTrace) {
     $info.EnvironmentVariables['TJ_VERBOSE_STATS'] = '1'
@@ -206,6 +207,8 @@ $info.EnvironmentVariables['TJ_GCM_INTERRUPT_WORKER'] = '1'
 # Persistent runtime shader bytecode cache shared by every run; the backend
 # creates the folder on first use. TJ_SHADER_CACHE stays unset (default on).
 $info.EnvironmentVariables['TJ_SHADER_CACHE_DIR'] = Join-Path $repoRoot 'shader-cache'
+# Key/controller bindings (change in game with F1, or with scripts/controls_editor.ps1).
+$info.EnvironmentVariables['TJ_CONTROLS_FILE'] = Join-Path $repoRoot 'controls.ini'
 if ($TextureLabelBatch) {
     $info.EnvironmentVariables['TJ_TEXTURE_LABEL_BATCH'] = '1'
 }

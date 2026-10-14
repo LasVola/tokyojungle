@@ -24,6 +24,10 @@ So we're doing it ourselves.
 > 2 hours 10 minutes of continuous hands-on play on 2026-10-14, at the game's native
 > 30 FPS, with no crash, no freeze and no graphical glitches seen.
 
+![The in-game Stats screen after the run: Max years survived 102](assets/stats-102-years.jpg)
+
+<sub>The game's own Stats screen after that run: <b>Max years survived: 102</b>.</sub>
+
 The game boots to the title screen, menus, the animal select and into Survival,
 and plays through normally. The HUD, map, menus and in-game saving all work.
 The renderer now draws every frame the game sends, and the work since September
@@ -66,7 +70,7 @@ The day before, the same measurement gave 27 FPS with 26-29% of frames late.
 | Graphics (RSX → Direct3D 12) | **Done**: full rendering, HUD, map, menus, FXAA |
 | Frame rate and pacing | **Done**: steady 30 FPS, including busy areas |
 | Long-session stability | **Done**: 2 h 10 min with no freeze |
-| Input | **Done**: keyboard (used for every test above); XInput supported |
+| Input and controls | **Done**: keyboard, mouse buttons and XInput controllers, all rebindable in game (F1) |
 | Game data, fonts, movies | **Done** |
 | Survival mode | **Playable**: full 102-year run |
 | Saving | **Works** in play; reload across sessions being checked |
@@ -83,6 +87,7 @@ The day before, the same measurement gave 27 FPS with 26-29% of frames late.
 - **Command ring.** A libgcm-style FIFO recycle fixed a deadlock in very large frames.
 - **Guest hot paths.** Environment checks that ran thousands of times a second are now cached. That removed almost all of the remaining late frames.
 - **Window.** Alt no longer freezes the game, and closing the window ends the game cleanly, waiting for any save in progress.
+- **PC controls.** An in-game Controls screen (F1) rebinds every key, mouse button and controller button.
 
 The August-September development notes are kept in
 [docs/HISTORY-2026-09.md](docs/HISTORY-2026-09.md). They cover the boot, the stalled
@@ -156,10 +161,31 @@ SPU MLAA, early texture labels, lookup fast paths, 8 vertex threads and backgrou
 shader compiling. Saves go to `savedata/`, the shader cache to `shader-cache/`, and
 logs to `run-logs/` (the 10 newest are kept).
 
-**Controls:**
-- Space or Z: Cross. Enter: Start.
-- Arrow keys: D-pad. WASD: left stick. Numpad 4/6/8/2: right stick.
-- An XInput controller also works.
+### Controls
+
+Press **F1** in game (or **Back + Start** on a controller) to open the Controls screen:
+
+- **Arrows** or D-pad pick an action. Each row says what it does in the game.
+- **Enter** or A changes it: press the new key, mouse button or controller button.
+- **Delete** or X clears it, and **F5** twice restores the defaults.
+- **F1, Esc or B** saves and closes. Changes apply at once and are stored in `controls.ini`.
+
+![The in-game Controls screen](assets/controls-screen.jpg)
+
+| Action | Keyboard (default) | Controller |
+|--------|--------------------|------------|
+| Move | W A S D | Left stick |
+| Dodge | Numpad 8 / 2 / 4 / 6 | Right stick |
+| Jump (Cross) | Space or Z | A |
+| Eat / mark / carry (Circle) | X | B |
+| Claw attack (Square) | C | X |
+| Pack: fight / decoy (Triangle) | V | Y |
+| Creep (L1) / Bite (R1) | Q / E | LB / RB |
+| Pack commands (L2) / R2 | 1 / 3 | LT / RT |
+| Pause / map (Start) / Info (Select) | Enter / Backspace | Start / Back |
+| Items (D-pad up), D-pad | Arrow keys | D-pad |
+
+`scripts/controls_editor.ps1` edits the same file outside the game.
 
 **To quit,** close the window (X or Alt+F4). A save in progress finishes first.
 
