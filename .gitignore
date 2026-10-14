@@ -63,3 +63,8 @@ build_*/
 # Stale parallel project tree from an earlier bring-up attempt (359 MB,
 # contains its own build/ and meta/). Not part of the current pipeline.
 project/
+
+# Local run output
+build-clang/
+run-logs/
+shader-cache/
