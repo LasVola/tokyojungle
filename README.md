@@ -1,5 +1,9 @@
 # Tokyo Jungle Recompiled
 
+![Tokyo Jungle running natively — the title screen, rendered by the recompiled game](assets/title-screen.gif)
+
+<sub>The title screen, live: recompiled PPU code, the game's own SPU workloads, and its RSX command stream on D3D12. No emulator.</sub>
+
 **A Pomeranian walks into post-apocalyptic Tokyo. No, seriously.**
 
 Tokyo Jungle (2012) is the most wonderfully absurd game Sony ever published — a survival action game where you play as animals fighting for dominance in a Tokyo abandoned by humanity. One moment you're a tiny Pomeranian sneaking past lions in Shibuya, the next you're a dinosaur asserting territorial control over Yoyogi Park. It's brutal. It's beautiful. It has no business being as good as it is.
@@ -14,218 +18,81 @@ So we're doing it ourselves.
 
 **Tokyo Jungle Recompiled** is a native PC port built using [ps3recomp](https://github.com/sp00nznet/ps3recomp) — a static recompilation toolchain that translates PS3 PowerPC binaries into native C code, then compiles them as x86-64 executables. No emulation at runtime. No compatibility layers. Just raw, recompiled native code.
 
-## Status (October 2026): Survival Mode Fully Playable at 30 FPS
+## Status: Playable. Survival Mode Runs at a Steady 30 FPS (October 2026)
 
-> **A full 102-year Survival run has been played start to finish** on this build.
-> That was about 2 hours 10 minutes of continuous play on 2026-10-14, with no crash
-> and no freeze.
+> **A full 102-year Survival run has been played start to finish.** That was
+> 2 hours 10 minutes of continuous hands-on play on 2026-10-14, at the game's native
+> 30 FPS, with no crash, no freeze and no graphical glitches seen.
 
-Frame pacing measured over that run:
+The game boots to the title screen, menus, the animal select and into Survival,
+and plays through normally. The HUD, map, menus and in-game saving all work.
+The renderer now draws every frame the game sends, and the work since September
+has been about making it **fast and stable for hours**.
+
+### Play-tested
+
+Every result here comes from someone actually playing the game, not from a script:
+
+| Date | Session | Result |
+|------|---------|--------|
+| 2026-10-11 | Survival, busy areas | Map labels and text render correctly |
+| 2026-10-12 | Survival, several runs | Menus and HUD fixed (they used to flicker or vanish) |
+| 2026-10-13 | ~13 min Survival | 29-30 FPS in busy areas, no HUD loss, game saved normally |
+| 2026-10-13 | ~22 min Survival | Exposed a rare command-ring deadlock (freeze), since fixed |
+| 2026-10-13 | ~14 min full run | No freeze; game saved during play |
+| **2026-10-14** | **2 h 10 min, 102 in-game years** | **30.0 FPS average, 99.7% of frames on time, no crash or freeze** |
+
+Between the hands-on runs, every build was also checked with an automated hidden
+run: boot, menus, into Survival, frame rate and error checks.
+
+### Frame pacing (2-hour run, 2026-10-14)
 
 | Measure | Result |
 |---------|--------|
-| Gameplay frames | 219,510 (7,310 s) |
-| Average frame rate | **30.0 FPS**, the game's native rate |
+| Gameplay frames | 219,510 over 7,310 s |
+| Average frame rate | **30.0 FPS** (the game's native rate) |
 | Frames on time (37 ms or less) | **99.7%** |
-| Frames over 45 ms | 21 in two hours (first-time shader builds and area loads) |
+| Frames over 45 ms | 21 in two hours (first-sight shaders, area loads) |
 | Median / 99th percentile frame time | 33.3 ms / 35.7 ms |
 
-For comparison, the same measurement on the 2026-10-13 builds gave 27 FPS, with
-26-29% of frames late.
+The day before, the same measurement gave 27 FPS with 26-29% of frames late.
+
+### Milestones
 
 | Milestone | Status |
 |-----------|--------|
-| Binary analysis, PPU lifting, all 12 SPU job images | **Done** |
-| Graphics (RSX → Direct3D 12) | **Done**: full rendering, HUD, map, menus, FXAA in place of the PS3's SPU MLAA |
-| Frame rate and pacing | **Done**: steady 30 FPS in busy areas |
-| Input | **Done**: keyboard (used for the 102-year run); XInput controllers supported |
-| Survival mode | **Playable**: full 102-year run completed |
-| Saving | **Works** in normal play; save/reload across sessions is still being checked |
+| Binary analysis and PPU lifting | **Done**: 7,924 functions |
+| SPU job images (SPURS) | **Done**: all 12 lifted and dispatched |
+| Graphics (RSX → Direct3D 12) | **Done**: full rendering, HUD, map, menus, FXAA |
+| Frame rate and pacing | **Done**: steady 30 FPS, including busy areas |
+| Long-session stability | **Done**: 2 h 10 min with no freeze |
+| Input | **Done**: keyboard (used for every test above); XInput supported |
+| Game data, fonts, movies | **Done** |
+| Survival mode | **Playable**: full 102-year run |
+| Saving | **Works** in play; reload across sessions being checked |
 | Story mode | Being tested |
 | DLC species | Not included in this repository |
 
-### What changed since the August notes below
+### How it got here (September → October 2026)
 
-- **Renderer.**
-  - Prefix replay with GPU ownership, early texture-label publication and a label-batch cap.
-  - 384 texture slots (the HUD used to vanish when 96 ran out).
-  - A 4096-entry vertex-shader cache with a hash index (fixed a long-session freeze).
-  - An on-disk shader cache plus background compiling (first-sight hitch 678 ms → 161 ms).
-  - Multi-threaded vertex conversion.
-  - The PS3's SPU MLAA job is skipped and replaced by a host FXAA pass. That pass was the biggest single slowdown.
-- **FIFO.** A libgcm-style command-ring recycle fixed a deadlock in very large frames.
-- **Guest-side hot paths.**
-  - Environment-variable checks that ran thousands of times a second (per HLE call, per SPU job, per event wait) are now cached.
-  - That change removed almost all of the remaining late frames.
-- **Window.**
-  - Alt no longer opens the Windows keyboard menu, which used to freeze the game for seconds.
-  - Closing the window ends the game cleanly, waiting for any save in progress.
-- **Logging.** Normal play writes only small logs. Per-second diagnostics need `TJ_VERBOSE_STATS=1` or a trace switch in the launcher.
+- **Renderer.** Prefix replay with GPU ownership, plus early texture-label publication with a batch cap.
+- **HUD.** 384 texture slots; the HUD used to vanish when 96 ran out.
+- **Long-session freeze.** A 4096-entry vertex-shader cache with a hash index replaced a cache that filled up after about 13 minutes and froze the game.
+- **Anti-aliasing.** The PS3's SPU MLAA job, the biggest single slowdown, is skipped and replaced by a host FXAA pass.
+- **Shader hitches.** An on-disk shader cache and background shader compiling cut the worst first-sight hitch from 678 ms to 161 ms. Vertex conversion runs on 8 threads.
+- **Command ring.** A libgcm-style FIFO recycle fixed a deadlock in very large frames.
+- **Guest hot paths.** Environment checks that ran thousands of times a second are now cached. That removed almost all of the remaining late frames.
+- **Window.** Alt no longer freezes the game, and closing the window ends the game cleanly, waiting for any save in progress.
 
-### Running it
-
-1. Build ps3recomp with the patch in [`patches/ps3recomp`](patches/ps3recomp/README.md).
-2. Follow the build steps below.
-3. Run `scripts/post_lift.py` after lifting.
-4. Launch with the recommended settings:
-
-```powershell
-powershell -File scripts\launch_tokyojungle.ps1 -Run -Recommended -GameData <folder with your extracted game (USRDIR, PARAM.SFO)>
-```
-
-`input/EBOOT.ELF` and `input/PARAM.SFO` must come from your own copy of the game.
-
-**Controls:**
-- Space or Z: Cross. Enter: Start.
-- Arrow keys: D-pad. WASD: left stick. Numpad 4/6/8/2: right stick.
-- An XInput controller also works.
+The August-September development notes are kept in
+[docs/HISTORY-2026-09.md](docs/HISTORY-2026-09.md). They cover the boot, the stalled
+game-clock counter and the first frames.
 
 ### Still to check
 
-- Story mode, chapter by chapter.
-- Save, quit and reload across sessions.
-- The Alt-key fix in hands-on play.
-
-This round of work was done with Codex (August–October 2026) and Claude Code
-(October 2026). Every gameplay result above comes from real hands-on play.
-
-## Earlier Status (August 2026): Phase 8 — Boots to a Window, Audio Initialises, Geometry Not Yet Drawing
-
-> **This is the first 3D title to attempt ps3recomp.** The game boots end-to-end,
-> opens a D3D12 window, runs its PSN data-install flow, brings up SPURS and all
-> twelve of its SPU job images, loads its game data, and completes audio
-> initialisation. Its own clear colour reaches the screen. It no longer hangs,
-> crashes or exits — it now parks in its main loop waiting on a single counter
-> that nothing in the emulator writes. It does not yet draw geometry.
-
-**A note on the function count.** Earlier builds advertised *35,208 lifted
-functions*. That number was wrong, and the current one is lower on purpose:
-`find_functions` was treating intra-function basic blocks as separate function
-entries, inventing tens of thousands of phantoms. It now covers those blocks
-properly. The fix was checked against ground truth on a *different* title that
-ships an unstripped debug build (+90 real functions recovered, 0 phantoms
-introduced) — Tokyo Jungle's own binary is stripped, so its count cannot be
-verified directly. The honest figure is **7,924**. A count going down was progress.
-
-| Milestone | Status |
-|-----------|--------|
-| Binary analysis & function discovery | **Done** — 7,924 functions, ground-truth verified |
-| PPU disassembly & code lifting | **Done** — 7 body overrides (heap, abort, pure-virtual) |
-| Project scaffold & build system | **Done** — clang-cl + Ninja |
-| ELF loading & VM setup | **Done** — 4 GB space, 256 MB VRAM, callback stacks, GCM page |
-| CRT initialization | **Done** — argv, TLS (`r13`), guest heap redirected |
-| LV2 syscall dispatch | **Done** — plus `PS3_SCTRACE` with guest-caller resolution |
-| Import table resolution (PLT/NID) | **Done** — slots derived from the module descriptors |
-| Guest threads | **Done** — thread entry trampoline (every thread was a silent no-op) |
-| Graphics backend (RSX → D3D12) | **Partial** — window opens, clears present, no geometry |
-| PSN data-install flow | **Done** — DataCheck / CreateGameData handshake completes |
-| SPU job manager (SPURS) | **Done** — chains walk, job guards work, all 12 images lifted, 0 dispatch misses |
-| Game data / asset loading | **Done** — every file the boot asks for opens; sound banks load |
-| Audio (cellAudio) | **Partial** — init / PortOpen / PortStart succeed, no output device yet |
-| Input (cellPad → XInput/SDL) | Not Started |
-| Survival Mode playable | Not Started |
-| Story Mode playable | Not Started |
-| DLC species support | Not included in this repository |
-
-### What's Working
-
-- **7,924 PPU functions** recompiled to native C++ and compiled to x86-64
-- **A window with the game's own pixels in it** — `CELL_GCM` `CLEAR_SURFACE` reaches
-  the D3D12 backend and presents; the frame colour is the guest's, not ours
-- **The PS3 data-install flow** — the title's installer runs to completion, which
-  needed all three of ps3recomp's independent path roots configured (`sys_fs`
-  syscalls, the `cellFs` HLE prefix table, and `cellGame`'s content path)
-- **Guest threads actually run** — `ppu_install_thread_trampoline`; without it every
-  `sys_ppu_thread_create` thread spawned, reported FINISHED, and executed nothing
-- **SPURS job chains** — the walker handles JOB / SYNC / NEXT / GUARD, and job
-  guards are implemented, so a chain waits for its notify instead of running
-  against parameters the game has not filled in yet
-- **All 12 SPU images lifted and dispatched** — captured with `SPU_DUMP_MISS`,
-  matched by content fingerprint, 4,751 SPU functions, zero dispatch misses. The
-  sound jobs run to completion, read their work descriptors and DMA their results
-- **Every file the boot asks for opens** — the disc, hdd-game and `app_home` roots
-  all resolve into the title's real data (`input/USRDIR/`, 1,053 files); the sound
-  banks load. Zero failed opens across a run
-- **Complete lifting coverage** — all 7,410 functions the binary's `.opd` table
-  declares are present in the lifted set, so "the caller was never lifted" is ruled
-  out as an explanation when something does not run
-- **Audio initialisation** — `cellAudioInit`, `cellAudioPortOpen`,
-  `cellAudioSetNotifyEventQueue` and `cellAudioPortStart` all complete
-- **Diagnostics that earn their keep** — `TJ_GENMAP` (stub address → import name),
-  `TJ_OPD_GUARD` (write-protect the OPD arena), `PS3_SCTRACE`, `TJ_IMPTRACE`, and a
-  watchdog that reports the HLE *and* lv2 syscall a wedged thread is inside
-  (`in_hle=` / `syscall=`) plus the counter it is polling (`TJ_POLLWATCH`,
-  `TJ_TIMEWATCH`). The watchdog's `CTR` is the last `bctrl` target and goes stale
-  the moment a call returns — it named `sys_lwmutex_unlock` for a thread that had
-  long since left it, which is why the per-thread tables exist.
-
-> **Measure with `PS3_VERBOSE=0`.** The per-event logging is heavy enough to change
-> what the title does, not just how fast: every guest thread writes through one
-> `FILE` lock, and at the ~6k lines/s a SPURS audio chain produces a thread can
-> starve on it for seconds. This title presents four frames in 40 s with the log
-> discarded and one with it redirected to a file. Note that `ps3_log_verbose()`
-> treats a non-tty stderr as "be verbose", so *redirecting to a file turns the
-> firehose on* unless you say otherwise.
-
-### Current Blocker
-
-**One counter the title waits on is never written.** The boot no longer hangs,
-crashes or exits: every worker thread stays alive, the vblank handler runs at
-~60 Hz, and the frame presents. The main loop then parks in `func_00213A14`,
-which waits on two things — an outstanding-request count, already zero, and
-
-    [r31+0x1A0] + 3 >= [[TOC+0x1860] + 0x18]        (guest 0x00C04A68)
-
-That second field reads **0 forever**. Nothing writes it: not guest stores, not
-an HLE, not SPU DMA — all three checked, the last two only after extending the
-write-watch to cover the inline `vm_write*` family that `libs/` uses. Ticking it
-by hand (`TJ_TICK_GAMECLOCK`, off by default) takes the log from ~3,400 lines to
-559,486 and the title runs on, so it is definitively what holds the boot. What
-*should* write it is still unknown, and that is the next thing to solve.
-
-Everything downstream of it is consequence, not cause — including **no geometry**.
-
-Also outstanding, but not what is blocking:
-
-- **`cellFont` is held back** on the title's own stubs (`TJ_KEEP='cellFont*'`), so
-  no UI text renders
-- **No audio output device** — the pipeline initialises and the SPU jobs run, but
-  nothing is wired to a host audio backend
-
-### Recently Fixed
-
-Three that each moved the boot forward a stage:
-
-- **The title sat forever "waiting for device mounting".** `cellFsStat('/dev_hdd0')`
-  resolved one directory too high, so the device never appeared and the main thread
-  never returned to the render loop. The mapping carried a `../` that assumed the
-  process ran from `build/`, while the program loads its ELF relative to the project
-  root.
-- **Every asset open missed, which made the title quit.** The disc, hdd-game and
-  `app_home` roots pointed at the VFS root rather than `input/`, so
-  `data/snd/static.sgd` and everything beside it failed to open. Losing the sound
-  bank made SGX fail, tear itself down, and return −1 from `main`.
-- **SGX teardown deadlocked against its own audio thread.** The shutdown joins
-  `sgx-audio-thr`, which waits on the SPURS completion queue with an infinite
-  timeout — and `cellSpursFinalize` has already stopped the job chains, so no
-  completion can ever arrive. ps3recomp now cancels the queues SPURS attached;
-  waiters get `CELL_ECANCELED`, which the title's audio loop already treats as
-  "leave the loop".
-
-And two older ones worth naming, because both spent a long time wearing a
-convincing disguise:
-
-- **`cellAudioPortOpen` was allocating its audio buffer on top of the HLE OPD arena.**
-  It used a hardcoded `0x01000000`, commented "free window" — which is exactly where
-  this port keeps its import descriptor table. Opening an audio port `memset` 128 KB
-  of it to zero, after which every import resolved through those descriptors
-  dispatched to a null address. A null `bctr` returns *with r3 untouched*, so the
-  guest reads its own first argument back as a status code. The middleware duly
-  reported `failed to set notify queue (23A0)` — and `0x23A0` was not an error code
-  at all, it was the event-queue key it had just passed in.
-- **SPURS never signalled the application.** `cellSpursAttachLv2EventQueue` discarded
-  the queue id, so a thread blocked in `sys_event_queue_receive` waiting for job
-  completion could never be woken. The title sat there for its entire boot.
+- Story mode, chapter by chapter
+- Save, quit and reload across sessions
+- Other GPUs (all testing so far used one NVIDIA RTX-class PC)
 
 ## How It Works
 
@@ -250,41 +117,54 @@ The ps3recomp toolchain handles the heavy lifting of translating PowerPC instruc
 
 ### Prerequisites
 
-- **CMake** 3.20+
-- **C++20 compiler** — MSVC 2022 (19.35+), GCC 12+, or Clang 14+
+- **CMake** 3.20+ and **Ninja**
+- **clang-cl** (LLVM) with the MSVC 2022 build tools (Windows, Direct3D 12)
 - **Python** 3.10+ with packages: `pycryptodome`, `capstone`, `construct`, `tabulate`, `tomli`, `tqdm`
-- **ps3recomp** — clone from [sp00nznet/ps3recomp](https://github.com/sp00nznet/ps3recomp)
-- **A legitimate copy of Tokyo Jungle** (NPUA80523 / BCAS20219) — you must legally own the game
-- **Ninja** (recommended build system)
+- **ps3recomp** at [sp00nznet/ps3recomp](https://github.com/sp00nznet/ps3recomp) commit `d7fff845`, with
+  [`patches/ps3recomp`](patches/ps3recomp/README.md) applied, checked out next to this folder
+- **A legitimate copy of Tokyo Jungle** (NPUA80523 / BCAS20219). You must legally own the game
 
 ### Steps
 
 ```bash
-# Clone with submodule
-git clone --recursive https://github.com/sp00nznet/tokyojungle.git
-cd tokyojungle
-
-# Install Python dependencies
+git clone https://github.com/LasVola/tokyojungle.git
+git clone https://github.com/sp00nznet/ps3recomp.git
+cd ps3recomp && git checkout d7fff845aca42b5083791801a01d150f5f0ec18c
+git apply ../tokyojungle/patches/ps3recomp/ps3recomp-tokyojungle-2026-10-14.patch
+cd ../tokyojungle
 pip install -r requirements.txt
 
-# Set up your decrypted ELF (you must provide this yourself)
-cp /path/to/your/EBOOT.ELF input/
+# Your own decrypted ELF and PARAM.SFO
+cp /path/to/your/EBOOT.ELF /path/to/your/PARAM.SFO input/
 
-# Run the analysis pipeline (function discovery + lifting)
-python scripts/analyze.py
+python scripts/analyze.py        # function discovery + lifting
+python scripts/gen_stubs.py      # stubs and dispatch table
+python scripts/post_lift.py      # post-lift repairs (vector fixes, MLAA skip hook, ...)
 
-# Post-lift processing (patches, stubs, dispatch table)
-python scripts/gen_stubs.py
-
-# Configure and build
-cmake -B build -G Ninja
-cmake --build build --config Release
-
-# Run
-./build/Release/tokyojungle.exe
+cmake -B build-clang -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+cmake --build build-clang --config Release
 ```
 
-> **Note:** You must supply your own legally obtained game files. This project does not include, distribute, or link to any copyrighted game data.
+### Running
+
+```powershell
+powershell -File scripts\launch_tokyojungle.ps1 -Run -Recommended -GameData <folder with your extracted game (USRDIR, PARAM.SFO)>
+```
+
+`-Recommended` turns on every setting used for the tested runs above: FXAA instead of
+SPU MLAA, early texture labels, lookup fast paths, 8 vertex threads and background
+shader compiling. Saves go to `savedata/`, the shader cache to `shader-cache/`, and
+logs to `run-logs/` (the 10 newest are kept).
+
+**Controls:**
+- Space or Z: Cross. Enter: Start.
+- Arrow keys: D-pad. WASD: left stick. Numpad 4/6/8/2: right stick.
+- An XInput controller also works.
+
+**To quit,** close the window (X or Alt+F4). A save in progress finishes first.
+
+> **Note:** You must supply your own legally obtained game files. This project does
+> not include, distribute, or link to any copyrighted game data.
 
 ## Game IDs
 
@@ -298,46 +178,43 @@ cmake --build build --config Release
 
 ```
 tokyojungle/
-├── config/
-│   └── tokyojungle.toml       # ps3recomp configuration
 ├── src/
-│   ├── main.cpp                # Entry point, VM init, ELF loading
-│   ├── stubs.cpp               # Game-specific HLE overrides (trophy, network)
-│   ├── recomp_bridge.h         # Memory access, indirect call dispatch, syscalls
-│   ├── import_resolver.h       # PLT import table population & heap allocator
-│   ├── hle_imports.h           # 61 HLE handlers (cellGcm, cellPad, malloc, etc.)
-│   └── elf_loader.h            # ELF segment loader
+│   ├── main.cpp                # Entry point, VM init, ELF loading, HLE registration
+│   ├── tj_present.cpp          # Present loop: vblank cadence, flips, FIFO drain, clean exit
+│   ├── tj_crt_overrides.cpp    # Game-specific overrides (MLAA skip, SPU task signals, ...)
+│   ├── tj_pamf_media.cpp       # PAMF movie playback
+│   ├── tj_gcm_interrupt.cpp    # GCM interrupt worker
+│   ├── stubs.cpp, recomp_bridge.h, import_resolver.h, hle_imports.h, elf_loader.h
+│   └── gen/                    # HLE NID table, SPU workload registry
 ├── scripts/
-│   ├── analyze.py              # Binary analysis pipeline
-│   ├── gen_stubs.py            # Post-lift processing (TOC fix, bctr, stubs)
-│   └── add_traces.py           # Debug tracing for game functions
+│   ├── analyze.py, gen_stubs.py  # Lifting pipeline
+│   ├── post_lift.py              # Post-lift repairs and hooks
+│   └── launch_tokyojungle.ps1    # Launcher with the -Recommended preset
+├── patches/ps3recomp/          # Runtime changes as one patch against ps3recomp
+├── tests/                      # Native and Python unit tests
 ├── input/                      # Your game files go here (gitignored)
-├── generated/                  # Recompiled C output (~150MB, gitignored)
-│   ├── ppu_recomp_0NN.cpp      # 7,924 lifted PPU functions
-│   ├── ppu_recomp.h            # Function declarations
-│   ├── ppu_stubs.c             # Manual CRT overrides (_start, init stubs)
-│   ├── dispatch_table.c        # Guest addr -> host func lookup table
-│   └── functions.json          # Function boundary list for lifter
-├── build/                      # Build output (gitignored)
-└── docs/
-    ├── PROGRESS.md             # Detailed progress log
-    └── TECHNICAL.md            # Technical notes & findings
+├── generated/                  # Recompiled C++ output (gitignored)
+└── docs/                       # Progress notes and development history
 ```
 
 ## Contributing
 
-This is an ambitious preservation project and help is very welcome. The biggest areas of need:
+Help is very welcome. The most useful things now:
 
-- **The stalled counter** — the current blocker, described above: find what should write `0x00C04A68` (`[[TOC+0x1860]+0x18]`). Ruled out already: guest stores, HLE stores, SPU DMA, and any lifting gap. Everything else, including the missing geometry, is downstream of it.
-- **RSX Graphics Reverse Engineering** — Working out why the game's draw calls never reach the D3D12 backend. The frame clears and presents correctly, so the path is open; something upstream is not submitting geometry.
-- **SPU Program Analysis** — The title dispatches around 100 SPU jobs per run across
-  12 distinct images, and only one ("soc-job", the sound down-mix) is lifted. The
-  others are raw SPURS job binaries loaded from the game's own data files, so they
-  have to be captured at runtime with `SPU_DUMP_MISS` before they can be lifted.
-- **Game Logic Debugging** — Once code is lifted, tracking down crashes and behavioral bugs
-- **Testing** — Comparing behavior against RPCS3 reference runs
+- **Story mode testing.** Play through chapters and report anything that breaks.
+- **Other hardware.** Run it on other GPUs (AMD, Intel) and report frame pacing.
+- **Save/reload checks** across many sessions.
+- **Code review** of the renderer and runtime patch (`patches/ps3recomp`).
 
-If you've worked with PS3 internals, RPCS3, N64Recomp, or similar recompilation projects, your expertise would be invaluable.
+If you've worked with PS3 internals, RPCS3, N64Recomp, or similar recompilation
+projects, your expertise would be invaluable.
+
+## Credits
+
+- **[sp00nznet](https://github.com/sp00nznet)**: the original port and
+  [ps3recomp](https://github.com/sp00nznet/ps3recomp)
+- **This fork (August–October 2026)**: renderer, pacing and stability work done with
+  Codex and Claude Code, play-tested by LasVola
 
 ## License
 

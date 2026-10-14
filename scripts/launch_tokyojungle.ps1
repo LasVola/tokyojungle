@@ -416,6 +416,21 @@ try {
     Write-Output "Started visible Tokyo Jungle PID=$($process.Id); logs=$runDirectory; limit=$limitDescription"
     Write-Output 'Controls: Space/Z = Cross, Enter = Start, arrows = D-pad, WASD = left stick, numpad 4/6/8/2 = right stick.'
     Write-Output 'Click the game window to enable keyboard input. Close its window when finished.'
+    # Best effort: bring the new game window to the front so keyboard input works at once.
+    try {
+        if (-not ('TjLaunch.Win' -as [type])) {
+            Add-Type -Namespace TjLaunch -Name Win -ErrorAction Stop -MemberDefinition `
+                '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);'
+        }
+        for ($i = 0; $i -lt 80 -and -not $process.HasExited; $i++) {
+            $process.Refresh()
+            if ($process.MainWindowHandle -ne [IntPtr]::Zero) {
+                [void][TjLaunch.Win]::SetForegroundWindow($process.MainWindowHandle)
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        }
+    } catch {}
     while (-not $process.WaitForExit(250)) {
         if ($MaxSeconds -gt 0 -and $timer.Elapsed.TotalSeconds -ge $MaxSeconds) {
             $record.StopReason = 'hands-on test deadline'
