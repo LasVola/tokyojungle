@@ -19,12 +19,20 @@ This project turns the game's own PS3 code into a Windows program using
 
 ![The game's Stats screen after the run: Max years survived 102](assets/stats-102-years.jpg)
 
+![Grass at the PS3's 720p (left) and in 2K mode (right)](assets/grass-720p-vs-2k.png)
+
+*Left: the PS3's 720p. Right: 2K mode.*
+
 ## Controls
 
 Press **F1** in game (or **Back + Start** on a controller) to change any key or button.
 Each row shows what the action does. Changes save to `controls.ini` and work right away.
 
 ![The in-game Controls screen](assets/controls-screen.jpg)
+
+Button prompts in the game's menus show your PC keys instead of PS3 buttons, and follow your bindings:
+
+![PS3 button prompts (top) and the PC key prompts that replace them (bottom)](assets/pc-key-prompts.png)
 
 | Action | Keyboard | Controller |
 |--------|----------|------------|
