@@ -1,1 +1,2 @@
 *.patch -text
+docs/*.sha256 -text

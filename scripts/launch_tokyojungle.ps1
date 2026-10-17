@@ -29,6 +29,8 @@ param(
     [switch]$TextureChurnTrace,
     [switch]$TextureSnapshotRetention,
     [switch]$TextureSnapshotHintRetarget,
+    # Candidate only: reuse same-epoch texture snapshots when write-watch shows no write.
+    [switch]$SnapshotFrameReuse,
     [switch]$VertexProgramHashReuse,
     # Candidate only: skip CPU fetch/convert of VP attribute slots the VS never reads.
     [switch]$VpAttrUsedMask,
@@ -66,6 +68,67 @@ param(
     # Candidate: first-sight VS/PS compiles on worker threads (submitted at draw
     # record, waited for at replay). Same shaders/PSOs; off by default.
     [switch]$ShaderPrefetch,
+    # Candidate: reuse SPU job contexts, clearing only the bytes each job used
+    # (full 256 KB clears were 20-55% of SPU job time). Off by default.
+    [switch]$SpuCtxReuse,
+    # Candidate: let the game's own 30/60 FPS switch return to 60 (port fix)
+    # and only drop to 30 when 5 of the last 9 frames miss (game default 2).
+    [switch]$Flip60,
+    # Candidate: run the image-17 geometry job chain on 2 host threads (heavy fights).
+    [switch]$GeometryLanes,
+    # Opt-in: draw the display surfaces and main depth at N x the 1280x720
+    # guest size and present them 1:1 (2 = 2560x1440). 1 = off. Implies
+    # -DisableMlaa. Not part of -Recommended until accepted in game.
+    [ValidateRange(1, 3)]
+    [int]$RenderScale = 1,
+    # With -RenderScale only: borderless window at the monitor rect when the
+    # monitor equals the internal size; otherwise the window stays windowed.
+    [switch]$Borderless,
+    # Opt-in: the emulated 60 Hz VBlank follows the game monitor's real vblanks
+    # (120 Hz -> every 2nd) instead of the free-running QPC timer, with automatic
+    # QPC fallback. With -LightweightFps (in -Recommended) it also logs one
+    # [TJ-VBLANK-SOURCE] line per second. Not part of -Recommended.
+    [switch]$DisplayVBlank,
+    # Diagnostic only: that per-second source/present-cadence line on any run
+    # (e.g. a QPC baseline for an A/B against -DisplayVBlank).
+    [switch]$VBlankSourceTrace,
+    # Opt-in: present vsync frames with SyncInterval = display divisor (2 at
+    # 120 Hz), so every frame stays 2 refreshes (3 swap buffers). Implies
+    # -DisplayVBlank. Not part of -Recommended. TJ_PRESENT_PHASE=hold (env
+    # only) is the older hold-until-tick A/B variant.
+    [switch]$PresentPhase,
+    # Opt-in: a zero-draw FIFO completion edge right after a final frame skips
+    # its full GPU wait when nothing guest-visible depends on that frame
+    # (TJ_EDGE_NOWAIT=1); the next frame's opening wait still retires it.
+    # Not part of -Recommended until a hidden A/B and a user run pass.
+    [switch]$EdgeNoWait,
+    # Candidate: texture snapshots batch their per-call GetWriteWatch(RESET)
+    # write-watch queries (TJ_WATCH_BATCH=1). Not part of -Recommended.
+    [switch]$WatchBatch,
+    # Candidate: one helper thread runs each texture capture's own write-watch
+    # query while the presenter records the next draws; captures still apply
+    # in order before any label/flip/copy (TJ_SNAPSHOT_PARALLEL=1). Needs
+    # -TextureWriteWatch On or Audit. Not part of -Recommended.
+    [switch]$SnapshotParallel,
+    # Candidate: texture units served from their hinted snapshot take one
+    # write-watch query per distinct range at the next guest-visible/consumer
+    # barrier instead of per capture (TJ_SNAPSHOT_LATE_PROOF=1; Count = 2,
+    # count-only, serial captures). Needs -TextureWriteWatch On or Audit.
+    # Not part of -Recommended.
+    [ValidateSet('Off', 'On', 'Count')]
+    [string]$SnapshotLateProof = 'Off',
+    # Candidate: per-draw vertex decode plan; attribute format/stride/base
+    # decisions hoisted out of the per-vertex loop, every fetch still
+    # resolved (TJ_VERTEX_PLAN=1). Not part of -Recommended.
+    [switch]$VertexPlan,
+    # Candidate: texture-label early-ready scan resumes after the records it
+    # already proved, revalidated by GCM display/tile generation
+    # (TJ_LABEL_EARLY_MEMO=1). Not part of -Recommended.
+    [switch]$LabelEarlyMemo,
+    # Candidate: GCM SetWaitFlip / FIFO-recycle Sleep(1) polls wait on events
+    # raised at flip completion / FIFO walk instead (TJ_FLIP_WAIT_EVENT=1).
+    # Not part of -Recommended until a hidden A/B and a user run pass.
+    [switch]$FlipWaitEvent,
     [string]$SaveRoot,
     # Folder holding the extracted title (contains USRDIR\, PARAM.SFO). Required with -Run.
     [string]$GameData
@@ -90,6 +153,26 @@ if ($Recommended) {
     if ($VertexParallel -eq 0) { $VertexParallel = 8 }
     # 2026-10-13 hidden cold-cache A/B: worst first-sight frame 678 -> 161 ms, identical cache output.
     $ShaderPrefetch = $true
+    # 2026-10-16: 60 FPS step 1, in user test (exe 1164BA9C).
+    $SpuCtxReuse = $true
+    # 2026-10-16 hidden run: 85/100 s at 55+ FPS (was locked 30 after first dip).
+    $Flip60 = $true
+    # 2026-10-17 hidden 2x A/B: ~8% less vertex-convert time per vertex, bit-exact harness (exe 91C87A8C).
+    $VertexPlan = $true
+    # 2026-10-17 hidden 2x: label scan 0.6-1.0 -> 0.06-0.12 ms/frame (max 3.4 -> 0.45); audit 152k resumes, 0 stale (exe 42C2692D).
+    $LabelEarlyMemo = $true
+    # 2026-10-17 hidden 2x: textures repeat ~5x/frame (r=5.12, ~500 write-watch queries saved/frame); audit 1.32M deferred, 0 mismatches (exe 43996BA1).
+    if ($SnapshotLateProof -eq 'Off') { $SnapshotLateProof = 'On' }
+}
+if ($RenderScale -gt 1) {
+    # Guest Edge MLAA re-uploads a 1x image over the display; the renderer
+    # keeps scale 1 unless that wrapper is skipped.
+    $DisableMlaa = $true
+}
+if ($PresentPhase) {
+    # The divisor comes from the display-locked tick; with the QPC source
+    # every Present stays Present(1,0).
+    $DisplayVBlank = $true
 }
 if ($DrawCostTrace -and ($PerformanceCapture -or $FifoDispatchTrace)) {
     throw '-DrawCostTrace requires -PerformanceCapture OFF.'
@@ -113,6 +196,14 @@ if ($PrefixQueueAhead -and -not $PrefixQueuedPair) {
 }
 if ($TextureReleaseNowait -and ($PrefixOwnership -or $PrefixOverlap -or $TextureLabelBatch)) {
     throw '-TextureReleaseNowait requires ownership, overlap and batching OFF.'
+}
+if ($SnapshotParallel -and ($TextureWriteWatch -eq 'Off' -or $WatchBatch -or $SnapshotFrameReuse -or $Non3dLabelPass)) {
+    # The renderer would log inactive=... and capture serially.
+    throw '-SnapshotParallel requires -TextureWriteWatch On or Audit, and -WatchBatch, -SnapshotFrameReuse and -Non3dLabelPass OFF.'
+}
+if ($SnapshotLateProof -ne 'Off' -and ($TextureWriteWatch -eq 'Off' -or $WatchBatch -or $SnapshotFrameReuse -or $Non3dLabelPass -or $SnapshotParallel)) {
+    # The renderer would log inactive=... and capture serially.
+    throw '-SnapshotLateProof requires -TextureWriteWatch On or Audit, and -WatchBatch, -SnapshotFrameReuse, -Non3dLabelPass and -SnapshotParallel OFF.'
 }
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).ProviderPath
 $executable = Join-Path $repoRoot 'build-clang\tokyojungle.exe'
@@ -155,7 +246,16 @@ $removedSettings = @(
     'TJ_INDEXED_DIAG', 'TJ_INDEXED_CAPTURE_DIR', 'TJ_COMPOSE_CAPTURE_DIR',
     'TJ_SHADER_CACHE', 'TJ_SHADER_CACHE_DIR', 'TJ_SHADER_PREFETCH',
     'TJ_HLE_PERF', 'TJ_SPURS_DISPATCH_PERF', 'TJ_SPURS_JOB_PHASE_PERF', 'TJ_JOBCHAIN_PERF',
-    'RSX_CAP', 'RSX_CAP_DIR', 'RSX_CAP_HOTKEY', 'CELLMARK_DUMP', 'CELLMARK_DUMP_DIR'
+    'RSX_CAP', 'RSX_CAP_DIR', 'RSX_CAP_HOTKEY', 'CELLMARK_DUMP', 'CELLMARK_DUMP_DIR',
+    'TJ_SPU_CTX_REUSE', 'TJ_SPU_CTX_VERIFY',
+    'TJ_FLIP_PROMOTE', 'TJ_FLIP30_LIMIT', 'TJ_FORCE_FLIP60', 'TJ_FLIP_GOV_TRACE',
+    'TJ_HIGH_QOS', 'TJ_EF_SPIN_US', 'TJ_AUDIO_BUFFER_MS', 'TJ_AUDIO_MMCSS',
+    'TJ_JOBCHAIN_LANES', 'TJ_JOBCHAIN_LANES_ONLY', 'TJ_JOBCHAIN_LANES_TRACE', 'TJ_JOBCHAIN_LANES_SPIN_US',
+    'TJ_RENDER_SCALE', 'TJ_WINDOW_MODE', 'TJ_SNAPSHOT_FRAME_REUSE',
+    'TJ_VBLANK_SOURCE', 'TJ_VBLANK_SOURCE_TRACE',
+    'TJ_PRESENT_PHASE', 'TJ_PRESENT_PHASE_EARLY_US', 'TJ_PRESENT_PHASE_BUFFERS',
+    'TJ_EDGE_NOWAIT', 'TJ_WATCH_BATCH', 'TJ_FLIP_WAIT_EVENT', 'TJ_SNAPSHOT_PARALLEL', 'TJ_SNAPSHOT_LATE_PROOF', 'TJ_VERTEX_PLAN', 'TJ_LABEL_EARLY_MEMO', 'TJ_LABEL_EARLY_MEMO_AUDIT',
+    'TJ_STDOUT_FILE', 'TJ_STDERR_FILE'
 )
 foreach ($name in $removedSettings) { $info.EnvironmentVariables.Remove($name) }
 $info.EnvironmentVariables.Remove('TJ_GPU_COMPLETION_REUSE')
@@ -207,8 +307,27 @@ $info.EnvironmentVariables['TJ_GCM_INTERRUPT_WORKER'] = '1'
 # Persistent runtime shader bytecode cache shared by every run; the backend
 # creates the folder on first use. TJ_SHADER_CACHE stays unset (default on).
 $info.EnvironmentVariables['TJ_SHADER_CACHE_DIR'] = Join-Path $repoRoot 'shader-cache'
-# Key/controller bindings (change in game with F1, or with scripts/controls_editor.ps1).
+# Key/controller bindings (edit with controls_editor.ps1 / the desktop 'Tokyo Jungle Controls').
 $info.EnvironmentVariables['TJ_CONTROLS_FILE'] = Join-Path $repoRoot 'controls.ini'
+if ($SpuCtxReuse) {
+    $info.EnvironmentVariables['TJ_SPU_CTX_REUSE'] = '1'
+}
+if ($GeometryLanes) {
+    $info.EnvironmentVariables['TJ_JOBCHAIN_LANES'] = '2'
+    $info.EnvironmentVariables['TJ_JOBCHAIN_LANES_ONLY'] = '0x005F7680'
+    if ($LightweightFps) { $info.EnvironmentVariables['TJ_JOBCHAIN_LANES_TRACE'] = '1' }
+}
+if ($Flip60) {
+    # Full-speed scheduling on hybrid CPUs (2026-10-16 hidden A/B: +5 to +11 FPS in heavy scenes, 3/3 pairs).
+    $info.EnvironmentVariables['TJ_HIGH_QOS'] = '1'
+    # Skip the full GPU drain at zero-draw FIFO edges (2026-10-17 hidden 2x A/B: fence wait 5 -> 0.03 ms/frame, 3/3 pairs).
+    $info.EnvironmentVariables['TJ_EDGE_NOWAIT'] = '1'
+    # Audio: 60 ms output buffer + MMCSS mixer (crackle on alt-tab / CPU load, 2026-10-17).
+    $info.EnvironmentVariables['TJ_AUDIO_BUFFER_MS'] = '60'
+    $info.EnvironmentVariables['TJ_AUDIO_MMCSS'] = '1'
+    $info.EnvironmentVariables['TJ_FLIP_PROMOTE'] = '1'
+    $info.EnvironmentVariables['TJ_FLIP30_LIMIT'] = '9'
+}
 if ($TextureLabelBatch) {
     $info.EnvironmentVariables['TJ_TEXTURE_LABEL_BATCH'] = '1'
 }
@@ -251,6 +370,9 @@ if ($TextureSnapshotRetention) {
 if ($TextureSnapshotHintRetarget) {
     $info.EnvironmentVariables['TJ_TEXTURE_SNAPSHOT_HINT_RETARGET'] = '1'
 }
+if ($SnapshotFrameReuse) {
+    $info.EnvironmentVariables['TJ_SNAPSHOT_FRAME_REUSE'] = '1'
+}
 if ($VertexProgramHashReuse) {
     $info.EnvironmentVariables['TJ_VP_UCODE_HASH_REUSE'] = '1'
 }
@@ -286,6 +408,42 @@ if ($Non3dLabelPass) {
 }
 if ($DisableMlaa) {
     $info.EnvironmentVariables['TJ_DISABLE_MLAA'] = '1'
+}
+if ($RenderScale -gt 1) {
+    $info.EnvironmentVariables['TJ_RENDER_SCALE'] = [string]$RenderScale
+}
+if ($Borderless) {
+    $info.EnvironmentVariables['TJ_WINDOW_MODE'] = 'borderless'
+}
+if ($DisplayVBlank) {
+    $info.EnvironmentVariables['TJ_VBLANK_SOURCE'] = 'display'
+}
+if ($PresentPhase) {
+    $info.EnvironmentVariables['TJ_PRESENT_PHASE'] = '1'
+}
+if ($EdgeNoWait) {
+    $info.EnvironmentVariables['TJ_EDGE_NOWAIT'] = '1'
+}
+if ($WatchBatch) {
+    $info.EnvironmentVariables['TJ_WATCH_BATCH'] = '1'
+}
+if ($SnapshotParallel) {
+    $info.EnvironmentVariables['TJ_SNAPSHOT_PARALLEL'] = '1'
+}
+if ($SnapshotLateProof -ne 'Off') {
+    $info.EnvironmentVariables['TJ_SNAPSHOT_LATE_PROOF'] = $(if ($SnapshotLateProof -eq 'Count') { '2' } else { '1' })
+}
+if ($VertexPlan) {
+    $info.EnvironmentVariables['TJ_VERTEX_PLAN'] = '1'
+}
+if ($LabelEarlyMemo) {
+    $info.EnvironmentVariables['TJ_LABEL_EARLY_MEMO'] = '1'
+}
+if ($FlipWaitEvent) {
+    $info.EnvironmentVariables['TJ_FLIP_WAIT_EVENT'] = '1'
+}
+if ($VBlankSourceTrace -or ($DisplayVBlank -and $LightweightFps)) {
+    $info.EnvironmentVariables['TJ_VBLANK_SOURCE_TRACE'] = '1'
 }
 if ($LightweightFps -or $PerformanceCapture -or $PresentWorkTrace -or $FrameDeliveryTrace) {
     $info.EnvironmentVariables['TJ_FPS_TRACE'] = '1'
@@ -332,6 +490,7 @@ $record = [ordered]@{
     TextureChurnTrace = [bool]$TextureChurnTrace
     TextureSnapshotRetention = [bool]$TextureSnapshotRetention
     TextureSnapshotHintRetarget = [bool]$TextureSnapshotHintRetarget
+    SnapshotFrameReuse = [bool]$SnapshotFrameReuse
     VertexProgramHashReuse = [bool]$VertexProgramHashReuse
     VpAttrUsedMask = $info.EnvironmentVariables.ContainsKey('TJ_VP_ATTR_USED_MASK')
     BlitSnapshotPool = [bool]$BlitSnapshotPool
@@ -342,6 +501,18 @@ $record = [ordered]@{
     Non3dLabelPass = $info.EnvironmentVariables.ContainsKey('TJ_NON3D_LABEL_PASS')
     DisableMlaa = $info.EnvironmentVariables.ContainsKey('TJ_DISABLE_MLAA')
     HostAa = $info.EnvironmentVariables.ContainsKey('TJ_DISABLE_MLAA') # backend FXAA follows MLAA skip
+    RenderScale = $RenderScale
+    Borderless = $info.EnvironmentVariables.ContainsKey('TJ_WINDOW_MODE')
+    DisplayVBlank = $info.EnvironmentVariables.ContainsKey('TJ_VBLANK_SOURCE')
+    VBlankSourceTrace = $info.EnvironmentVariables.ContainsKey('TJ_VBLANK_SOURCE_TRACE')
+    PresentPhase = $info.EnvironmentVariables.ContainsKey('TJ_PRESENT_PHASE')
+    EdgeNoWait = $info.EnvironmentVariables.ContainsKey('TJ_EDGE_NOWAIT')
+    WatchBatch = $info.EnvironmentVariables.ContainsKey('TJ_WATCH_BATCH')
+    SnapshotParallel = $info.EnvironmentVariables.ContainsKey('TJ_SNAPSHOT_PARALLEL')
+    SnapshotLateProof = $SnapshotLateProof
+    VertexPlan = $info.EnvironmentVariables.ContainsKey('TJ_VERTEX_PLAN')
+    LabelEarlyMemo = $info.EnvironmentVariables.ContainsKey('TJ_LABEL_EARLY_MEMO')
+    FlipWaitEvent = $info.EnvironmentVariables.ContainsKey('TJ_FLIP_WAIT_EVENT')
     TextureLabelBatch = $info.EnvironmentVariables.ContainsKey('TJ_TEXTURE_LABEL_BATCH')
     TextureLabelCap = $TextureLabelCap
     Recommended = [bool]$Recommended
@@ -374,6 +545,7 @@ $record = [ordered]@{
     StopReason = $null
     ExitCode = $null
     LogDrainCompleted = $false
+    DirectLogFiles = $false
 }
 if (-not $Run) { [pscustomobject]$record; return }
 if (Get-Process -Name tokyojungle -ErrorAction SilentlyContinue) {
@@ -397,15 +569,46 @@ $runDirectory = Join-Path $repoRoot ('run-logs\visible-user-test-' +
     (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $PID)
 [void](New-Item -ItemType Directory -Path $runDirectory)
 $summaryPath = Join-Path $runDirectory 'summary.json'
+# The game writes its stdout/stderr straight to these files (unbuffered,
+# append-only; TJ_STDOUT_FILE/TJ_STDERR_FILE in main.cpp). Through the ~4 KB
+# pipes, every game thread that logged blocked whenever this script's async
+# copy fell behind: 1.8-14.4 s whole-game freezes in traced run
+# visible-user-test-20261017-012850. The pipes stay attached as a fallback and
+# are copied to *.pipe.log: they get only output written before the game
+# switched to its files. An exe without this support (no UTF-16 'TJ_STDERR_FILE'
+# in its image) gets neither variable and its pipes are copied to the usual
+# names, as before, so live tails and post-run scripts see them at once.
+$stdoutLogPath = Join-Path $runDirectory 'tokyojungle.stdout.log'
+$stderrLogPath = Join-Path $runDirectory 'tokyojungle.stderr.log'
+$directLogSupported = $false
+try {
+    # Latin-1 maps each byte to one char, so the UTF-16LE name matches at any offset.
+    $exeText = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($executable))
+    $directLogSupported = $exeText.IndexOf(
+        [Text.Encoding]::GetEncoding(28591).GetString([Text.Encoding]::Unicode.GetBytes('TJ_STDERR_FILE')),
+        [StringComparison]::Ordinal) -ge 0
+    $exeText = $null
+} catch {
+    Write-Output ('Direct log check skipped: ' + $_.Exception.Message)
+}
+if ($directLogSupported) {
+    $stdoutPipePath = Join-Path $runDirectory 'tokyojungle.stdout.pipe.log'
+    $stderrPipePath = Join-Path $runDirectory 'tokyojungle.stderr.pipe.log'
+    $info.EnvironmentVariables['TJ_STDOUT_FILE'] = $stdoutLogPath
+    $info.EnvironmentVariables['TJ_STDERR_FILE'] = $stderrLogPath
+} else {
+    $stdoutPipePath = $stdoutLogPath
+    $stderrPipePath = $stderrLogPath
+}
 $process = New-Object Diagnostics.Process
 $process.StartInfo = $info
 $stdout = $stderr = $null
 $started = $false
 $timer = [Diagnostics.Stopwatch]::new()
 try {
-    $stdout = [IO.File]::Open((Join-Path $runDirectory 'tokyojungle.stdout.log'),
+    $stdout = [IO.File]::Open($stdoutPipePath,
         [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-    $stderr = [IO.File]::Open((Join-Path $runDirectory 'tokyojungle.stderr.log'),
+    $stderr = [IO.File]::Open($stderrPipePath,
         [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
     if (-not $process.Start()) { throw 'Tokyo Jungle process creation failed.' }
     $started = $true
@@ -457,6 +660,15 @@ try {
     }
     if ($stdout) { $stdout.Dispose() }
     if ($stderr) { $stderr.Dispose() }
+    $record.DirectLogFiles = [bool]($directLogSupported -and
+        (Test-Path -LiteralPath $stdoutLogPath) -and (Test-Path -LiteralPath $stderrLogPath))
+    foreach ($logPair in @(@($stdoutLogPath, $stdoutPipePath), @($stderrLogPath, $stderrPipePath))) {
+        try {
+            if (-not (Test-Path -LiteralPath $logPair[0]) -and (Test-Path -LiteralPath $logPair[1])) {
+                Move-Item -LiteralPath $logPair[1] -Destination $logPair[0]
+            }
+        } catch {}
+    }
     $record.EndedUtc = [DateTime]::UtcNow.ToString('o')
     [IO.File]::WriteAllText($summaryPath, ($record | ConvertTo-Json))
     $process.Dispose()

@@ -15,14 +15,22 @@
  *
  * VBlank deadlines use a rational nominal-60-Hz cadence. The outer FIFO
  * drain cadence and the per-tick flip/drain order remain load-bearing for
- * titles that fence every render pass.
+ * titles that fence every render pass. TJ_VBLANK_SOURCE=display (opt-in)
+ * fires the same per-tick work from the monitor's real vblanks instead, with
+ * a QPC watchdog (tj_vblank_source.h, backend display waiter).
+ * TJ_PRESENT_PHASE=1 (opt-in, display source only) presents vsync frames
+ * with SyncInterval = display divisor; TJ_PRESENT_PHASE=hold instead keeps an
+ * off-tick frame's swap-chain Present until right after the next tick
+ * (TjPresentPhase); tickets, completions and drains do not move.
  */
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 #include <mmsystem.h>
 #include "tj_vblank_cadence.h"
+#include "tj_vblank_source.h"
 
 #include "ppu_context.h"
 #include "sys_ppu_thread.h"
@@ -45,23 +53,35 @@ static HANDLE tj_fifo_kick_wait_event(int* requested)
     return *requested ? (HANDLE)cellGcm_fifo_kick_event() : NULL;
 }
 
+/* The presenter's 1 ms nap. With the display VBlank source it also ends on
+ * the waiter's tick event; NULL keeps the plain Sleep(1). */
+static void tj_present_nap(HANDLE vblank_event)
+{
+    if (!vblank_event || WaitForSingleObject(vblank_event, 1) == WAIT_FAILED)
+        Sleep(1);
+}
+
 static void tj_fifo_kick_wait_once(HANDLE event, int* active,
                                    int* failure_logged, uint64_t* wakes,
                                    uint64_t* timeouts, uint64_t* fallbacks,
-                                   DWORD timeout_ms)
+                                   DWORD timeout_ms, HANDLE vblank_event)
 {
     if (!event) {
-        if (timeout_ms) Sleep(1);
+        if (timeout_ms) tj_present_nap(vblank_event);
         return;
     }
     if (!*active) {
         if (fallbacks) ++*fallbacks;
-        if (timeout_ms) Sleep(1);
+        if (timeout_ms) tj_present_nap(vblank_event);
         return;
     }
 
-    DWORD result = WaitForSingleObject(event, timeout_ms);
+    HANDLE handles[2] = {event, vblank_event};
+    DWORD result = vblank_event
+        ? WaitForMultipleObjects(2, handles, FALSE, timeout_ms)
+        : WaitForSingleObject(event, timeout_ms);
     DWORD error = result == WAIT_FAILED ? GetLastError() : 0;
+    if (vblank_event && result == WAIT_OBJECT_0 + 1) return;   /* display VBlank */
     if (result == WAIT_OBJECT_0) {
         if (wakes) ++*wakes;
         return;
@@ -81,7 +101,7 @@ static void tj_fifo_kick_wait_once(HANDLE event, int* active,
                 (unsigned long)timeout_ms);
         fflush(stderr);
     }
-    if (timeout_ms) Sleep(1);
+    if (timeout_ms) tj_present_nap(vblank_event);
 }
 
 static uint64_t tj_vblank_clock_now(TjVBlankCadence* cadence,
@@ -711,6 +731,28 @@ struct tj_fifo_perf_loop {
     uint64_t fifo_kick_wakes, fifo_kick_timeouts, fifo_kick_fallbacks;
 };
 
+/* One stderr write per report line: stderr is unbuffered, so fprintf writes
+ * one character per system call (~2.6 us each to the TJ_STDERR_FILE log).
+ * fwrite holds the stream lock, so the line stays whole. */
+#if defined(__clang__) || defined(__GNUC__)
+__attribute__((format(printf, 1, 2)))
+#endif
+static void tj_present_log_line(const char* format, ...)
+{
+    char line[2048];
+    va_list args;
+    va_start(args, format);
+    const int length = vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    if (length >= 0 && (size_t)length < sizeof(line)) {
+        fwrite(line, 1, (size_t)length, stderr);
+        return;
+    }
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+}
+
 static void tj_fifo_perf_add_segment(uint64_t& total, uint64_t& maximum,
                                      uint64_t elapsed)
 {
@@ -793,7 +835,7 @@ static uint64_t tj_fifo_perf_loop_report(tj_fifo_perf_loop& state)
     if (now < state.next_report_ns) return 0;
     uint64_t report_begin = now;
     uint64_t report_end_ms = GetTickCount64();
-    fprintf(stderr,
+    tj_present_log_line(
             "[TJ-PRESENT-PERF] start_ms=%llu end_ms=%llu loops=%llu ticks=%llu loop-max=%lluus present-gap-max=%lluus "
             "sleep=%lluus/%lluus tick-present=%lluus/%lluus "
             "fifo-drain-1=%lluus/%lluus fifo-drain-2=%lluus/%lluus "
@@ -968,6 +1010,23 @@ int  cellSaveData_busy(void);
 void rsx_d3d12_backend_set_fence_wait_service(
     uint32_t (*service)(void* context, uint32_t remaining_ms), void* context);
 void rsx_d3d12_backend_set_fence_wait_fifo_pulse(int enabled);
+int  rsx_d3d12_backend_display_vblank_start(char* note, size_t note_size);
+void rsx_d3d12_backend_display_vblank_stop(void);
+uint64_t rsx_d3d12_backend_display_vblank_ticks(uint64_t* last_tick_qpc);
+void* rsx_d3d12_backend_display_vblank_event(void);
+void rsx_d3d12_backend_display_vblank_describe(char* out, size_t size, int window);
+uint32_t rsx_d3d12_backend_display_vblank_divisor(void);
+void rsx_d3d12_backend_present_hold_arm(int arm);
+int  rsx_d3d12_backend_present_held(void);
+int  rsx_d3d12_backend_present_release(void);
+uint64_t rsx_d3d12_backend_present_count(void);
+uint64_t rsx_d3d12_backend_present_forced_count(void);
+void rsx_d3d12_backend_present_interval_arm(uint32_t interval);
+void rsx_d3d12_backend_present_phase_tick(uint64_t tick_qpc);
+uint64_t rsx_d3d12_backend_present_paced_count(void);
+uint64_t rsx_d3d12_backend_present_forced_take(uint64_t* stamped, uint64_t* sum,
+                                               uint64_t* min, uint64_t* max);
+uint32_t rsx_d3d12_backend_swap_buffer_count(void);
 void cellGcmTickVBlank(void);
 int cellGcm_complete_flip_ticket(const tj_gcm_flip_ticket* ticket);
 int cellGcm_flip_uses_vsync(void);
@@ -1221,12 +1280,212 @@ static int tj_present_complete_ticket(const tj_gcm_flip_ticket* ticket)
     return completed;
 }
 
+/* TJ_PRESENT_PHASE (opt-in). With the display VBlank source driving the
+ * ticks on an output at a multiple of 60 Hz (divisor >= 2, e.g. 120 Hz), an
+ * off-tick frame's Present(1,0) lands anywhere between two ticks and is shown
+ * for 1 or 3 refreshes: judder even at 58-60 FPS.
+ *
+ * TJ_PRESENT_PHASE=1 (interval): every vsync frame's Present uses
+ * SyncInterval = divisor, so DXGI shows each frame for at least `divisor`
+ * refreshes and, with one frame per tick, settles on exactly `divisor`.
+ * Nothing is held or moved: take, composition, completion and drains stay.
+ *
+ * TJ_PRESENT_PHASE=hold (A/B only): such a vsync frame is still taken,
+ * replayed, composited and submitted at once, and still completes at the next
+ * VBlank, but the backend keeps its swap-chain Present until right after that
+ * VBlank. A frame composed within TJ_PRESENT_PHASE_EARLY_US (default 2000,
+ * max 8000) of the newest tick, with no Present since that tick, is already
+ * in phase and goes out at once. At most one frame is held: its ticket is
+ * awaiting_vblank, so no newer ticket is taken before that VBlank. The next
+ * frame's prefix replays need the back buffer and force a held Present out
+ * early (phase_forced).
+ *
+ * Unset, on the QPC source or at divisor 1 both modes do nothing. Presenter
+ * thread only. */
+enum { TJ_PRESENT_PHASE_OFF = 0, TJ_PRESENT_PHASE_INTERVAL = 1, TJ_PRESENT_PHASE_HOLD = 2 };
+struct TjPresentPhase {
+    int enabled;                    /* mode != OFF */
+    int mode;
+    const TjVBlankSource* source;   /* presenter stack, valid in its loop */
+    uint64_t frequency;             /* QPC */
+    uint64_t early_ticks;
+    uint64_t tick_stamp;            /* due stamp of the newest fired VBlank */
+    uint64_t presents_at_tick;      /* backend Present count when it fired */
+    uint64_t held_since;            /* QPC when the held frame was composed */
+    uint64_t presents_seen, paced_seen;
+    uint32_t last_interval;
+    /* [TJ-VBLANK-SOURCE] trace window */
+    uint64_t held, immediate, forced, hold_sum, hold_max;
+};
+static TjPresentPhase s_tj_present_phase = {};
+
+static void tj_vblank_trace_present(void);
+
+static uint64_t tj_present_phase_now(void)
+{
+    LARGE_INTEGER now = {};
+    return QueryPerformanceCounter(&now) && now.QuadPart > 0
+        ? (uint64_t)now.QuadPart : 0;
+}
+
+static void tj_present_phase_init(const TjVBlankSource* source)
+{
+    TjPresentPhase& p = s_tj_present_phase;
+    const char* value = getenv("TJ_PRESENT_PHASE");
+    if (!value) return;
+    const int mode = strcmp(value, "1") == 0 ? TJ_PRESENT_PHASE_INTERVAL
+        : strcmp(value, "hold") == 0 ? TJ_PRESENT_PHASE_HOLD : TJ_PRESENT_PHASE_OFF;
+    if (mode == TJ_PRESENT_PHASE_OFF) return;
+    LARGE_INTEGER frequency = {};
+    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) {
+        fprintf(stderr, "[TJ-PRESENT-PHASE] enabled=0 reason=no_qpc\n");
+        return;
+    }
+    unsigned early_us = 2000;
+    const char* early = getenv("TJ_PRESENT_PHASE_EARLY_US");
+    if (early && *early) {
+        char* end = NULL;
+        const unsigned long parsed = strtoul(early, &end, 10);
+        if (end && !*end && parsed <= 8000) early_us = (unsigned)parsed;
+    }
+    p.enabled = 1;
+    p.mode = mode;
+    p.source = source;
+    p.frequency = (uint64_t)frequency.QuadPart;
+    p.early_ticks = p.frequency * early_us / 1000000u;
+    p.presents_seen = rsx_d3d12_backend_present_count();
+    p.paced_seen = rsx_d3d12_backend_present_paced_count();
+    if (mode == TJ_PRESENT_PHASE_HOLD)
+        fprintf(stderr, "[TJ-PRESENT-PHASE] enabled=1 mode=hold early_us=%u swap_buffers=%u source=%s%s\n",
+                early_us, (unsigned)rsx_d3d12_backend_swap_buffer_count(),
+                source->display ? "display" : "qpc",
+                source->display ? "" : " hold=never (needs TJ_VBLANK_SOURCE=display)");
+    else
+        fprintf(stderr, "[TJ-PRESENT-PHASE] enabled=1 mode=interval swap_buffers=%u source=%s%s\n",
+                (unsigned)rsx_d3d12_backend_swap_buffer_count(),
+                source->display ? "display" : "qpc",
+                source->display ? "" : " interval=1 (needs TJ_VBLANK_SOURCE=display)");
+}
+
+/* Interval mode: SyncInterval for this vsync frame's Present (0 = the
+ * ordinary Present(1,0)). Display source following and divisor >= 2 only. */
+static uint32_t tj_present_phase_interval(void)
+{
+    TjPresentPhase& p = s_tj_present_phase;
+    if (p.mode != TJ_PRESENT_PHASE_INTERVAL || !p.source->following ||
+        !cellGcm_flip_uses_vsync())
+        return 0;
+    const uint32_t divisor = rsx_d3d12_backend_display_vblank_divisor();
+    if (divisor < 2) return 0;
+    p.last_interval = divisor > 4 ? 4u : divisor;
+    return p.last_interval;
+}
+
+/* Hold mode: an off-tick vsync frame; keep its Present for the next tick? */
+static int tj_present_phase_hold_next(int vblank)
+{
+    const TjPresentPhase& p = s_tj_present_phase;
+    return p.mode == TJ_PRESENT_PHASE_HOLD && !vblank && p.source->following &&
+           cellGcm_flip_uses_vsync() &&
+           rsx_d3d12_backend_display_vblank_divisor() >= 2;
+}
+
+/* Every fired VBlank, before cellGcmTickVBlank and its completions. */
+static void tj_present_phase_tick(uint64_t due, bool qpc_active)
+{
+    TjPresentPhase& p = s_tj_present_phase;
+    if (p.mode != TJ_PRESENT_PHASE_HOLD) return;
+    p.tick_stamp = qpc_active ? due : 0;
+    p.presents_at_tick = rsx_d3d12_backend_present_count();
+    rsx_d3d12_backend_present_phase_tick(p.tick_stamp);   /* forced-offset stamp */
+}
+
+/* After the held frame's ticket completed: right after its VBlank
+ * (at_tick), or early when vsync was turned off before that VBlank. */
+static void tj_present_phase_release(int at_tick)
+{
+    TjPresentPhase& p = s_tj_present_phase;
+    if (!p.enabled || !rsx_d3d12_backend_present_held()) return;
+    const int presented = rsx_d3d12_backend_present_release();
+    if (presented && at_tick) {
+        const uint64_t now = tj_present_phase_now();
+        const uint64_t hold = now && p.held_since && now >= p.held_since
+            ? now - p.held_since : 0;
+        ++p.held;
+        p.hold_sum += hold;
+        if (hold > p.hold_max) p.hold_max = hold;
+    } else if (presented) {
+        ++p.forced;
+    }
+    p.held_since = 0;
+    if (presented) tj_vblank_trace_present();
+}
+
+/* The backend just held this frame: present it now when it is already in
+ * phase, or when it completed at once and waits for no VBlank. The caller
+ * then records it in the trace as an ordinary present. */
+static void tj_present_phase_composed(int awaiting_vblank)
+{
+    TjPresentPhase& p = s_tj_present_phase;
+    if (!rsx_d3d12_backend_present_held()) return;
+    const uint64_t now = tj_present_phase_now();
+    const int in_phase = now && p.tick_stamp && now >= p.tick_stamp &&
+        now - p.tick_stamp <= p.early_ticks &&
+        rsx_d3d12_backend_present_count() == p.presents_at_tick;
+    if (!awaiting_vblank || in_phase) {
+        if (rsx_d3d12_backend_present_release()) ++p.immediate;
+        return;
+    }
+    p.held_since = now;
+}
+
+/* Trace fields; empty (unchanged line) when the phase is off. phase_swaps is
+ * every successful swap-chain Present in the window (the presenter's own
+ * presents= leaves out held frames the backend force-presented). */
+static void tj_present_phase_trace(char* out, size_t size)
+{
+    TjPresentPhase& p = s_tj_present_phase;
+    out[0] = '\0';
+    if (!p.enabled) return;
+    const uint64_t presents = rsx_d3d12_backend_present_count();
+    const uint64_t paced = rsx_d3d12_backend_present_paced_count();
+    const uint64_t swaps = presents - p.presents_seen;
+    const uint64_t paced_window = paced - p.paced_seen;
+    p.presents_seen = presents;
+    p.paced_seen = paced;
+    const double us = 1000000.0 / (double)p.frequency;
+    if (p.mode == TJ_PRESENT_PHASE_INTERVAL) {
+        snprintf(out, size, " phase_mode=interval phase_interval=%u phase_paced=%llu phase_swaps=%llu",
+                 (unsigned)p.last_interval, (unsigned long long)paced_window,
+                 (unsigned long long)swaps);
+        return;
+    }
+    uint64_t stamped = 0, after_sum = 0, after_min = 0, after_max = 0;
+    const uint64_t backend_forced = rsx_d3d12_backend_present_forced_take(
+        &stamped, &after_sum, &after_min, &after_max);
+    snprintf(out, size,
+             " phase_mode=hold phase_held=%llu phase_immediate=%llu phase_forced=%llu"
+             " phase_hold_us=%.0f/%.0f phase_forced_after_vblank_us=%.0f/%.0f/%.0f"
+             " phase_swaps=%llu",
+             (unsigned long long)p.held, (unsigned long long)p.immediate,
+             (unsigned long long)(p.forced + backend_forced),
+             p.held ? (double)p.hold_sum / (double)p.held * us : 0.0,
+             (double)p.hold_max * us,
+             stamped ? (double)after_min * us : 0.0,
+             stamped ? (double)after_sum / (double)stamped * us : 0.0,
+             (double)after_max * us, (unsigned long long)swaps);
+    p.held = p.immediate = p.forced = p.hold_sum = p.hold_max = 0;
+}
+
 static int tj_present_flip(int vblank, tj_gcm_flip_ticket* awaiting_vblank)
 {
     if (awaiting_vblank->generation) {
         if (!vblank && cellGcm_flip_uses_vsync()) return 0;
         tj_present_complete_ticket(awaiting_vblank);
         awaiting_vblank->generation = 0;
+        /* TJ_PRESENT_PHASE: a held Present goes out after that completion,
+         * right after this VBlank (or now, when vsync was turned off). */
+        tj_present_phase_release(vblank);
         /* Do not also complete a second frame on the same display tick. */
         return 0;
     }
@@ -1238,11 +1497,18 @@ static int tj_present_flip(int vblank, tj_gcm_flip_ticket* awaiting_vblank)
     if (!took) return 0;
     tj_flip_timeline_take(ticket,
         s_tj_flip_timeline.enabled ? &publication : nullptr);
+    const int phase_hold = tj_present_phase_hold_next(vblank);
+    const uint32_t phase_interval = tj_present_phase_interval();
+    if (phase_hold) rsx_d3d12_backend_present_hold_arm(1);
+    if (phase_interval) rsx_d3d12_backend_present_interval_arm(phase_interval);
     rsx_d3d12_backend_present_buffer(ticket.generation, ticket.buffer_id);
+    if (phase_interval) rsx_d3d12_backend_present_interval_arm(0);
+    if (phase_hold) rsx_d3d12_backend_present_hold_arm(0);
     tj_flip_timeline_present_return();
     if (!vblank && cellGcm_flip_uses_vsync())
         *awaiting_vblank = ticket;
     else tj_present_complete_ticket(&ticket);
+    if (phase_hold) tj_present_phase_composed(awaiting_vblank->generation != 0);
     return 1;
 }
 
@@ -1258,6 +1524,117 @@ static int tj_present_outer_drain_allowed(int pacing_enabled,
 
 static volatile LONG g_tj_present_stop;
 
+/* TJ_VBLANK_SOURCE_TRACE=1: one line per second with the source, per-second
+ * fired counts, the Present offset after the VBlank that released it, and the
+ * backend's waiter / DXGI present-cadence counters. Presenter thread only. */
+struct TjVBlankTrace {
+    int enabled;                    /* -1 unread */
+    ULONGLONG next_ms;
+    uint64_t fired_display, fired_qpc;
+    uint64_t vblank_qpc;            /* due stamp of the newest fired VBlank */
+    uint64_t present_min, present_max, present_sum, presents;
+};
+static TjVBlankTrace s_tj_vblank_trace = { -1 };
+
+static bool tj_vblank_trace_enabled()
+{
+    if (s_tj_vblank_trace.enabled < 0) {
+        const char* value = getenv("TJ_VBLANK_SOURCE_TRACE");
+        s_tj_vblank_trace.enabled = value && strcmp(value, "1") == 0;
+    }
+    return s_tj_vblank_trace.enabled > 0;
+}
+
+static void tj_vblank_trace_fire(uint64_t due, bool qpc_active)
+{
+    if (tj_vblank_trace_enabled())
+        s_tj_vblank_trace.vblank_qpc = qpc_active ? due : 0;
+}
+
+static void tj_vblank_trace_present(void)
+{
+    TjVBlankTrace& t = s_tj_vblank_trace;
+    if (t.enabled <= 0 || !t.vblank_qpc) return;
+    /* TJ_PRESENT_PHASE: a held frame is not on its way yet; its release
+     * records it. */
+    if (s_tj_present_phase.enabled && rsx_d3d12_backend_present_held()) return;
+    LARGE_INTEGER now = {};
+    if (!QueryPerformanceCounter(&now) || (uint64_t)now.QuadPart < t.vblank_qpc)
+        return;
+    const uint64_t offset = (uint64_t)now.QuadPart - t.vblank_qpc;
+    if (!t.presents || offset < t.present_min) t.present_min = offset;
+    if (offset > t.present_max) t.present_max = offset;
+    t.present_sum += offset;
+    ++t.presents;
+}
+
+static void tj_vblank_trace_tick(const TjVBlankSource& source,
+                                 uint64_t published, uint64_t frequency)
+{
+    if (!tj_vblank_trace_enabled()) return;
+    TjVBlankTrace& t = s_tj_vblank_trace;
+    const ULONGLONG now_ms = GetTickCount64();
+    if (!t.next_ms) t.next_ms = now_ms + 1000;
+    if (now_ms < t.next_ms) return;
+    t.next_ms = now_ms + 1000;
+    char waiter[384];
+    rsx_d3d12_backend_display_vblank_describe(waiter, sizeof(waiter), 1);
+    char phase[256];
+    tj_present_phase_trace(phase, sizeof(phase));
+    const double us = frequency ? 1000000.0 / (double)frequency : 0.0;
+    tj_present_log_line(
+            "[TJ-VBLANK-SOURCE] event=trace t_ms=%llu source=%s fired_display=%llu "
+            "fired_qpc=%llu published=%llu consumed=%llu fallbacks=%llu resumes=%llu "
+            "dropped=%llu presents=%llu present_after_vblank_us=%.0f/%.0f/%.0f%s %s\n",
+            (unsigned long long)now_ms, source.following ? "display" : "qpc",
+            (unsigned long long)(source.fired_display - t.fired_display),
+            (unsigned long long)(source.fired_qpc - t.fired_qpc),
+            (unsigned long long)published, (unsigned long long)source.consumed,
+            (unsigned long long)source.fallbacks, (unsigned long long)source.resumes,
+            (unsigned long long)source.dropped, (unsigned long long)t.presents,
+            t.presents ? (double)t.present_min * us : 0.0,
+            t.presents ? (double)t.present_sum / (double)t.presents * us : 0.0,
+            (double)t.present_max * us, phase, waiter);
+    t.fired_display = source.fired_display;
+    t.fired_qpc = source.fired_qpc;
+    t.present_min = t.present_max = t.present_sum = t.presents = 0;
+}
+
+static void tj_vblank_source_log_switch(const TjVBlankSource* source,
+                                        const char* event)
+{
+    static unsigned logged;
+    if (logged >= 32) return;       /* later switches: trace counters only */
+    ++logged;
+    char waiter[384];
+    rsx_d3d12_backend_display_vblank_describe(waiter, sizeof(waiter), 0);
+    fprintf(stderr, "[TJ-VBLANK-SOURCE] event=%s source=%s fallbacks=%llu resumes=%llu %s\n",
+            event, source->following ? "display" : "qpc",
+            (unsigned long long)source->fallbacks,
+            (unsigned long long)source->resumes, waiter);
+}
+
+/* Display source only: refresh the watchdog from the backend waiter and
+ * return its published tick count (0 when the source is off). Leaving QPC
+ * removes the watchdog's time base, so the source is abandoned for good. */
+static uint64_t tj_vblank_source_poll(TjVBlankSource* source,
+                                      TjVBlankCadence* cadence, uint64_t now,
+                                      bool qpc_active)
+{
+    if (!source->display) return 0;
+    uint64_t last_tick = 0;
+    const uint64_t published = rsx_d3d12_backend_display_vblank_ticks(&last_tick);
+    if (!qpc_active) {
+        tj_vblank_source_abandon(source, published);
+        tj_vblank_source_log_switch(source, "abandon_qpc_failed");
+        return 0;
+    }
+    if (tj_vblank_source_watch(source, cadence, now, published, last_tick))
+        tj_vblank_source_log_switch(source, source->following
+            ? "resume" : "fallback_no_tick_50ms");
+    return published;
+}
+
 /* This context lives on the presenter stack and is registered with the
  * backend only around an outer FIFO drain. Checked GPU fence waits invoke it
  * on this same presenter thread while the drain is blocked. */
@@ -1267,6 +1644,7 @@ struct TjFenceVBlankServiceContext {
     uint64_t* frequency;
     tj_gcm_flip_ticket* awaiting_vblank;
     int* rsx_ok;
+    TjVBlankSource* source;
     int ticket_serviced;
 };
 
@@ -1278,9 +1656,14 @@ static uint32_t tj_present_fence_wait_service(void* opaque,
     if (!remaining_ms) return 1;
     if (!context || !context->cadence || !context->qpc_active ||
         !context->frequency || !context->awaiting_vblank || !context->rsx_ok ||
-        context->ticket_serviced ||
+        !context->source || context->ticket_serviced ||
         InterlockedCompareExchange(&g_tj_present_stop, 0, 0) ||
         !*context->rsx_ok || !context->awaiting_vblank->generation)
+        return remaining_ms;
+    /* TJ_PRESENT_PHASE=hold: a held Present goes out only from the outer
+     * tick (never from inside a nested render_frame wait). Once the backend
+     * has force-presented it, ticks are serviced here as before. */
+    if (s_tj_present_phase.enabled && rsx_d3d12_backend_present_held())
         return remaining_ms;
 
     /* A mode switch retains the ordinary presenter's immediate-completion
@@ -1294,18 +1677,24 @@ static uint32_t tj_present_fence_wait_service(void* opaque,
 
     const uint64_t now = tj_vblank_clock_now(
         context->cadence, context->qpc_active, context->frequency);
-    if (tj_vblank_cadence_due(context->cadence, now)) {
-        const uint64_t due = context->cadence->deadline;
+    const uint64_t published = tj_vblank_source_poll(
+        context->source, context->cadence, now, *context->qpc_active);
+    if (tj_vblank_source_due(context->source, context->cadence, now, published)) {
+        const uint64_t due = tj_vblank_source_stamp(context->source, context->cadence);
         tj_flip_timeline_tick(*context->qpc_active, due);
+        tj_vblank_trace_fire(due, *context->qpc_active);
+        tj_present_phase_tick(due, *context->qpc_active);
         cellGcmTickVBlank();
         context->ticket_serviced = 1;
         tj_present_complete_ticket(context->awaiting_vblank);
         context->awaiting_vblank->generation = 0;
         /* Exactly one deadline is consumed here. Any additional catch-up ticks
          * remain for the presenter's normal bounded outer-loop path. */
-        tj_vblank_cadence_advance(context->cadence);
+        tj_vblank_source_advance(context->source, context->cadence, now);
         return remaining_ms;
     }
+    /* Display ticks have no deadline to sleep toward: re-check each 1 ms. */
+    if (context->source->following) return 1;
 
     /* Convert the remaining time to a positive millisecond slice, rounding up
      * so the wait reaches the deadline without polling early. Cap that slice
@@ -1402,6 +1791,35 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
     rsx_d3d12_backend_set_close_observer(
         s_tj_flip_timeline.enabled ? tj_flip_timeline_close_dump : nullptr);
 
+    /* TJ_VBLANK_SOURCE=display (opt-in): the emulated VBlank follows the
+     * monitor's real vblanks (one per round(refresh/60)) under a 50 ms QPC
+     * watchdog. Unset or any other value keeps the QPC cadence exactly. */
+    const char* vblank_source_request = getenv("TJ_VBLANK_SOURCE");
+    char vblank_source_note[192] = "";
+    int display_vblank = 0;
+    if (vblank_source_request && _stricmp(vblank_source_request, "display") == 0) {
+        if (!rsx_ok)
+            snprintf(vblank_source_note, sizeof(vblank_source_note), "reason=no_window");
+        else if (!vblank_qpc_active)
+            snprintf(vblank_source_note, sizeof(vblank_source_note), "reason=no_qpc");
+        else
+            display_vblank = rsx_d3d12_backend_display_vblank_start(
+                vblank_source_note, sizeof(vblank_source_note));
+    }
+    const uint64_t vblank_source_now = tj_vblank_clock_now(
+        &vblank_cadence, &vblank_qpc_active, &vblank_clock_frequency);
+    TjVBlankSource vblank_source;
+    tj_vblank_source_init(&vblank_source, display_vblank && vblank_qpc_active,
+                          vblank_source_now, vblank_clock_frequency);
+    const HANDLE display_vblank_event = vblank_source.display
+        ? (HANDLE)rsx_d3d12_backend_display_vblank_event() : NULL;
+    fprintf(stderr, "[TJ-VBLANK-SOURCE] source=%s requested=%s%s%s\n",
+            vblank_source.display ? "display" : "qpc",
+            vblank_source_request && *vblank_source_request
+                ? vblank_source_request : "unset",
+            vblank_source_note[0] ? " " : "", vblank_source_note);
+    tj_present_phase_init(&vblank_source);   /* TJ_PRESENT_PHASE=1 only */
+
     const char* pacing_request = getenv("TJ_PENDING_FLIP_PACING");
     const int pending_flip_pacing = pacing_request && strcmp(pacing_request, "1") == 0;
     if (pending_flip_pacing)
@@ -1447,8 +1865,11 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
         uint64_t loop_begin = perf_enabled ? tj_fifo_perf_now_ns(perf) : 0;
         uint64_t before_wait = tj_vblank_clock_now(
             &vblank_cadence, &vblank_qpc_active, &vblank_clock_frequency);
-        const DWORD wait_timeout_ms = tj_vblank_cadence_due(
-            &vblank_cadence, before_wait) ? 0 : 1;
+        uint64_t vblank_published = tj_vblank_source_poll(
+            &vblank_source, &vblank_cadence, before_wait, vblank_qpc_active);
+        const DWORD wait_timeout_ms = tj_vblank_source_due(
+            &vblank_source, &vblank_cadence, before_wait, vblank_published) ? 0 : 1;
+        const HANDLE vblank_wake = vblank_source.following ? display_vblank_event : NULL;
         uint64_t segment_begin = loop_begin;
         /* Service render-pass label waits promptly; the separate VBlank
          * deadline below controls ticks and vsynced flip completion. */
@@ -1459,11 +1880,11 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
                 perf_enabled ? &perf.fifo_kick_wakes : NULL,
                 perf_enabled ? &perf.fifo_kick_timeouts : NULL,
                 perf_enabled ? &perf.fifo_kick_fallbacks : NULL,
-                wait_timeout_ms);
+                wait_timeout_ms, vblank_wake);
         } else {
             if (fifo_kick_wait_requested && perf_enabled)
                 ++perf.fifo_kick_fallbacks;
-            if (wait_timeout_ms) Sleep(1);
+            if (wait_timeout_ms) tj_present_nap(vblank_wake);
         }
         if (perf_enabled) {
             uint64_t elapsed = tj_fifo_perf_elapsed_ns(perf, segment_begin);
@@ -1471,11 +1892,18 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
         }
         uint64_t now = tj_vblank_clock_now(
             &vblank_cadence, &vblank_qpc_active, &vblank_clock_frequency);
+        vblank_published = tj_vblank_source_poll(
+            &vblank_source, &vblank_cadence, now, vblank_qpc_active);
 
         int fired = 0;
-        while (tj_vblank_cadence_due(&vblank_cadence, now) && fired < 240) {
+        while (tj_vblank_source_due(&vblank_source, &vblank_cadence, now,
+                                    vblank_published) && fired < 240) {
             segment_begin = perf_enabled ? tj_fifo_perf_now_ns(perf) : 0;
-            tj_flip_timeline_tick(vblank_qpc_active, vblank_cadence.deadline);
+            const uint64_t vblank_due =
+                tj_vblank_source_stamp(&vblank_source, &vblank_cadence);
+            tj_flip_timeline_tick(vblank_qpc_active, vblank_due);
+            tj_vblank_trace_fire(vblank_due, vblank_qpc_active);
+            tj_present_phase_tick(vblank_due, vblank_qpc_active);
             cellGcmTickVBlank();
             /* Consume the completed frame before releasing the guest into its
              * next SetFlip, then advance FIFO/user interrupts after that flip
@@ -1483,6 +1911,7 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
             if (rsx_ok && tj_present_flip(1, &awaiting_vblank)) {
                 if (perf_enabled) tj_fifo_perf_mark_present(perf);
                 if (heartbeat_enabled) ++heartbeat_consumed;
+                tj_vblank_trace_present();
             }
             if (perf_enabled) {
                 uint64_t elapsed = tj_fifo_perf_elapsed_ns(perf, segment_begin);
@@ -1497,14 +1926,21 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
                 uint64_t elapsed = tj_fifo_perf_elapsed_ns(perf, segment_begin);
                 tj_fifo_perf_add_segment(perf.drain1_ns, perf.drain1_max_ns, elapsed);
             }
-            tj_vblank_cadence_advance(&vblank_cadence);
+            tj_vblank_source_advance(&vblank_source, &vblank_cadence, now);
             fired++;
             /* A catch-up burst can drain up to 240 costly GPU batches before
              * the outer message pump. Service this window's thread between
              * ticks too, so capture, close and private controller messages
-             * do not wait behind the entire burst. No guest ticks are skipped. */
+             * do not wait behind the entire burst. No guest ticks are skipped.
+             * Timed into the same pump segment as the outer pump, so a modal
+             * window loop here shows as pump time, not only as loop-max. */
+            segment_begin = perf_enabled ? tj_fifo_perf_now_ns(perf) : 0;
             if (rsx_ok && rsx_d3d12_backend_pump_messages() != 0)
                 rsx_ok = 0;
+            if (perf_enabled) {
+                uint64_t elapsed = tj_fifo_perf_elapsed_ns(perf, segment_begin);
+                tj_fifo_perf_add_segment(perf.pump_ns, perf.pump_max_ns, elapsed);
+            }
             /* Keep the existing one-shot trace control responsive while a
              * sustained backlog uses the bounded inner catch-up loop. */
             tj_flip_timeline_export_poll();
@@ -1513,9 +1949,13 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
              * work and advance; retain the bounded catch-up/resync below. */
             now = tj_vblank_clock_now(
                 &vblank_cadence, &vblank_qpc_active, &vblank_clock_frequency);
+            vblank_published = tj_vblank_source_poll(
+                &vblank_source, &vblank_cadence, now, vblank_qpc_active);
         }
-        if (fired >= 240 && tj_vblank_cadence_due(&vblank_cadence, now))
-            tj_vblank_cadence_resync(&vblank_cadence, now); /* fell far behind -- resync */
+        if (fired >= 240 && tj_vblank_source_due(&vblank_source, &vblank_cadence,
+                                                 now, vblank_published))
+            tj_vblank_source_resync(&vblank_source, &vblank_cadence, now,
+                                    vblank_published); /* fell far behind -- resync */
 
         /* Also drain at the outer cadence: titles fence every render pass on
          * an RSX label the drain writes, and waiting a full 16 ms per fence
@@ -1534,6 +1974,7 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
             if (tj_present_flip(0, &awaiting_vblank)) {
                 if (perf_enabled) tj_fifo_perf_mark_present(perf);
                 if (heartbeat_enabled) ++heartbeat_consumed;
+                tj_vblank_trace_present();
             }
             if (perf_enabled) {
                 uint64_t elapsed = tj_fifo_perf_elapsed_ns(perf, segment_begin);
@@ -1548,7 +1989,8 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
                 if (service_this_drain) {
                     TjFenceVBlankServiceContext service_context = {
                         &vblank_cadence, &vblank_qpc_active,
-                        &vblank_clock_frequency, &awaiting_vblank, &rsx_ok, 0
+                        &vblank_clock_frequency, &awaiting_vblank, &rsx_ok,
+                        &vblank_source, 0
                     };
                     rsx_d3d12_backend_set_fence_wait_service(
                         tj_present_fence_wait_service, &service_context);
@@ -1589,6 +2031,7 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
             tj_present_heartbeat(heartbeat_loop, rsx_ok, fired,
                                  heartbeat_consumed))
             heartbeat_consumed = 0;
+        tj_vblank_trace_tick(vblank_source, vblank_published, vblank_clock_frequency);
         tj_flip_timeline_export_poll();
         tj_survival_stall_snapshot_tick();
     }
@@ -1607,6 +2050,8 @@ static DWORD WINAPI tj_present_thread(LPVOID kick_event_parameter)
         fflush(NULL);
         TerminateProcess(GetCurrentProcess(), 0);
     }
+    if (display_vblank)
+        rsx_d3d12_backend_display_vblank_stop();
     if (backend_initialized)
         rsx_d3d12_backend_shutdown();
     if (timer_period_active)

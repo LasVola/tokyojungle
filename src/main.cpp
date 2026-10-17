@@ -15,6 +15,8 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <io.h>
+#include <fcntl.h>
 #endif
 
 // ps3recomp public headers
@@ -2771,8 +2773,70 @@ static void tj_npCommerceOffline(ppu_context* ctx)
     ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)SCE_NP_COMMERCE2_ERROR_SERVER_ERROR;
 }
 
+#ifdef _WIN32
+/* TJ_STDERR_FILE / TJ_STDOUT_FILE (set by launch_tokyojungle.ps1): write that
+ * CRT stream straight to an append-only file instead of the inherited launcher
+ * pipe. The pipe buffers only a few KB; whenever the launcher's async reader
+ * fell behind, every thread that logged blocked inside fprintf -- the
+ * presenter mid-frame, and SPU/job-chain perf reporters while holding locks
+ * every SPU job takes -- giving 1.8-14.4 s whole-game freezes in the traced
+ * run visible-user-test-20261017-012850. The streams stay unbuffered (setvbuf
+ * in main), so the file still ends where the process did, including a crash or
+ * the TerminateProcess window-close exit. Unset, or any failure, keeps the
+ * inherited handle exactly as before. */
+static void tj_redirect_std_stream_to_file(const wchar_t* env_name,
+                                           const char* label, int fd,
+                                           DWORD std_handle_id, FILE* stream)
+{
+    wchar_t path[2048];
+    const DWORD capacity = (DWORD)(sizeof(path) / sizeof(path[0]));
+    const DWORD length = GetEnvironmentVariableW(env_name, path, capacity);
+    if (length == 0) return;
+    if (length >= capacity) {
+        fprintf(stderr, "[TJ] %s path too long; keeping the inherited handle\n", label);
+        return;
+    }
+    SECURITY_ATTRIBUTES no_inherit = { (DWORD)sizeof(no_inherit), NULL, FALSE };
+    HANDLE file = CreateFileW(path, FILE_APPEND_DATA | SYNCHRONIZE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              &no_inherit, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "[TJ] %s open failed (error %lu); keeping the inherited handle\n",
+                label, GetLastError());
+        return;
+    }
+    /* Text mode like the inherited descriptor: lines stay CRLF. */
+    const int file_fd = _open_osfhandle((intptr_t)file, _O_TEXT);
+    if (file_fd < 0) {
+        CloseHandle(file);
+        fprintf(stderr, "[TJ] %s has no CRT descriptor; keeping the inherited handle\n", label);
+        return;
+    }
+    fflush(stream);
+    const int saved_fd = _dup(fd);   /* restore point; -1 when nothing was inherited */
+    if (_dup2(file_fd, fd) != 0) {
+        if (saved_fd >= 0) _dup2(saved_fd, fd);
+        if (saved_fd >= 0) _close(saved_fd);
+        _close(file_fd);
+        fprintf(stderr, "[TJ] %s switch failed; keeping the inherited handle\n", label);
+        return;
+    }
+    /* Release the inherited pipe end so the launcher's copy sees EOF. */
+    if (saved_fd >= 0) _close(saved_fd);
+    _close(file_fd);
+    SetStdHandle(std_handle_id, (HANDLE)_get_osfhandle(fd));
+}
+#endif
+
 int main(int argc, char* argv[])
 {
+#ifdef _WIN32
+    /* Before anything logs (see tj_redirect_std_stream_to_file). */
+    tj_redirect_std_stream_to_file(L"TJ_STDERR_FILE", "TJ_STDERR_FILE", 2,
+                                   STD_ERROR_HANDLE, stderr);
+    tj_redirect_std_stream_to_file(L"TJ_STDOUT_FILE", "TJ_STDOUT_FILE", 1,
+                                   STD_OUTPUT_HANDLE, stdout);
+#endif
     // Explicit renderer-only diagnostic: no ELF, title threads, VFS or saves.
     if (argc == 3 && strcmp(argv[1], "--rsx-reference") == 0) {
         extern int tj_rsx_reference_main(const char*);
@@ -2782,6 +2846,19 @@ int main(int argc, char* argv[])
     if (!IsProcessorFeaturePresent(PF_SSSE3_INSTRUCTIONS_AVAILABLE)) {
         fprintf(stderr, "[TJ] ERROR: this build requires an SSSE3-capable CPU\n");
         return EXIT_FAILURE;
+    }
+    /* TJ_HIGH_QOS=1: opt out of Windows power throttling (EcoQoS) so the
+     * scheduler keeps the guest, SPU-job and renderer threads on full-speed
+     * cores of hybrid CPUs even when the window is not focused. Threads
+     * inherit the process setting. */
+    if (const char* qos = getenv("TJ_HIGH_QOS"); qos && *qos && strcmp(qos, "0") != 0) {
+        PROCESS_POWER_THROTTLING_STATE state = {};
+        state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+        state.StateMask = 0;   /* controlled and off = always high QoS */
+        const BOOL ok = SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling,
+                                              &state, sizeof(state));
+        fprintf(stderr, "[TJ] high QoS (power throttling off): %s\n", ok ? "on" : "failed");
     }
 #endif
 

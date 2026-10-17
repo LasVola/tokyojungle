@@ -28,6 +28,12 @@ add_subdirectory(${PS3RECOMP_DIR} ps3recomp EXCLUDE_FROM_ALL)
 target_compile_definitions(ps3recomp_runtime PRIVATE
     PS3RECOMP_SPU_DMA_IMAGE17_CALLBACK
     PS3RECOMP_SPU_MAIN_WRITE_GATE)
+# PC key prompts: key-cap art (libs/input/pad_prompt_art.c) and the UI-atlas
+# patcher (libs/video/rsx_prompt_atlas.c) compile only with this define; the
+# D3D12 backend then swaps the known button atlases at record time. Runtime
+# switch: TJ_PROMPTS=0 shows the original PS3 prompts.
+target_compile_definitions(ps3recomp_runtime PRIVATE
+    PS3RECOMP_PROMPT_ART)
 
 # =============================================================================
 # Generated recompiled code
@@ -126,6 +132,31 @@ if(TJ_ENABLE_SPU)
             message(FATAL_ERROR
                 "Missing ${TJ_GEOMETRY_SPU_TAIL_SOURCE}; run work/make_geometry_tail_variant.py")
         endif()
+        # The variant must come from the current lifted source (which may carry
+        # the fuse_spu_loops.py loop fusion; the variant is always unfused).
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${TJ_GEOMETRY_SPU_SOURCE}" "${TJ_GEOMETRY_SPU_TAIL_SOURCE}")
+        file(SHA256 "${TJ_GEOMETRY_SPU_SOURCE}" TJ_GEOMETRY_SOURCE_SHA256)
+        file(STRINGS "${TJ_GEOMETRY_SPU_TAIL_SOURCE}" TJ_GEOMETRY_VARIANT_HASH_LINES
+             REGEX "TJ_DIAG_SOURCE_SHA256=")
+        list(LENGTH TJ_GEOMETRY_VARIANT_HASH_LINES TJ_GEOMETRY_VARIANT_HASH_LINE_COUNT)
+        set(TJ_GEOMETRY_VARIANT_SOURCE_SHA256 "")
+        if(TJ_GEOMETRY_VARIANT_HASH_LINE_COUNT EQUAL 1)
+            list(GET TJ_GEOMETRY_VARIANT_HASH_LINES 0 TJ_GEOMETRY_VARIANT_HASH_LINE)
+            if(TJ_GEOMETRY_VARIANT_HASH_LINE MATCHES "TJ_DIAG_SOURCE_SHA256=([0-9A-Fa-f]+)")
+                string(TOLOWER "${CMAKE_MATCH_1}" TJ_GEOMETRY_VARIANT_SOURCE_SHA256)
+            endif()
+        endif()
+        string(TOLOWER "${TJ_GEOMETRY_SOURCE_SHA256}" TJ_GEOMETRY_SOURCE_SHA256)
+        if(NOT TJ_GEOMETRY_VARIANT_SOURCE_SHA256 STREQUAL TJ_GEOMETRY_SOURCE_SHA256)
+            message(FATAL_ERROR
+                "image-17 direct-tail variant is stale or unstamped (needs exactly one "
+                "TJ_DIAG_SOURCE_SHA256=${TJ_GEOMETRY_SOURCE_SHA256}); rerun "
+                "work/make_geometry_tail_variant.py")
+        endif()
+        message(STATUS
+            "TJ_DIAG_SPU_DIRECT_TAIL: image 17 uses the UNFUSED direct-tail variant "
+            "(fuse_spu_loops.py 0x412C<->0x415C fusion not in this build)")
         list(REMOVE_ITEM TJ_SPU_LIFTED "${TJ_GEOMETRY_SPU_SOURCE}")
         # GENERATED_SOURCES independently globbed the same original file.
         # Remove it there too so the diagnostic variant is the sole owner of
@@ -227,6 +258,12 @@ if(TJ_ENABLE_SPU)
         endif()
         set_property(SOURCE ${TJ_SPU_LIFTED} APPEND PROPERTY
             COMPILE_OPTIONS ${TJ_SSSE3_FLAG})
+        if(MSVC)
+            # Lifted guest code: no stack-cookie checks on every function
+            # (1,500+ jobs per frame), matching the generated PPU options.
+            set_property(SOURCE ${TJ_SPU_LIFTED} APPEND PROPERTY
+                COMPILE_OPTIONS /GS- /Zc:tlsGuards-)
+        endif()
     endif()
     if(NOT TJ_ENABLE_SPU_TRACE)
         set_property(SOURCE ${TJ_SPU_LIFTED} APPEND PROPERTY
@@ -246,6 +283,7 @@ add_executable(tokyojungle
     src/stubs.cpp
     src/dispatch_glue.cpp
     src/tj_crt_overrides.cpp
+    src/tj_prompt_text.cpp        # PC key names in game text (post_lift hook)
     src/tj_pamf_media.cpp
     src/tj_present.cpp
     src/tj_gcm_interrupt.cpp

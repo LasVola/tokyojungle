@@ -264,6 +264,62 @@ def patch_mlaa_skip_file(path):
     return 1
 
 
+def patch_hook_site(data, address, anchor, before, marker, lines):
+    """Insert one hook block next to its anchor (binary, CRLF-safe).
+
+    Returns (data, found). Raises when the anchor is missing or not unique in
+    the function, or when the marker exists in an unexpected shape."""
+    signature = ("void func_%s(ppu_context* ctx) {" % address).encode()
+    count = data.count(signature)
+    if not count:
+        return data, 0
+    if count != 1:
+        raise RuntimeError("ambiguous hook function " + address)
+    start = data.index(signature)
+    end = data.index(b"\n}", start)
+    if data.count(anchor, start, end) != 1:
+        raise RuntimeError("hook anchor drift in func_%s (%s)" % (address, marker))
+    pos = data.index(anchor, start, end)
+    line_start = data.rindex(b"\n", start, pos) + 1
+    line_end = data.index(b"\n", pos)
+    newline = b"\r\n" if data[line_end - 1:line_end] == b"\r" else b"\n"
+    tag = ("        /* %s */" % marker).encode()
+    addition = newline.join([tag] + [line.encode() for line in lines]) + newline
+    at = line_start if before else line_end + 1
+    if before and data[at - len(addition):at] == addition:
+        return data, 1
+    if not before and data[at:at + len(addition)] == addition:
+        return data, 1
+    if data.count(("/* %s */" % marker).encode(), start, end):
+        raise RuntimeError("unexpected hook shape: " + marker)
+    return data[:at] + addition + data[at:], 1
+
+
+# PC key names in game text (src/tj_prompt_text.cpp). func_00198590 is the one
+# text job every UI string goes through (r4 = job; private UTF-8 copy at
+# job+0x28). The hook runs before the game measures, fits, centres and draws
+# the string. Site shape: (function, anchor, before?, marker, lines).
+PROMPT_TEXT_SITE = (
+    "00198590", b"ctx->gpr[0] = vm_read32(ctx->gpr[4] + 0xC);", True,
+    "tj-prompt-text", (
+        "        { extern void tj_prompt_rewrite_job(uint32_t);",
+        "          tj_prompt_rewrite_job((uint32_t)ctx->gpr[4]); }",
+    ))
+PROMPT_TEXT_MARK = PROMPT_TEXT_SITE[3]
+
+
+def patch_prompt_text_file(path):
+    """Insert the text-job rewrite hook (tj_prompt_rewrite_job) in func_00198590."""
+    # Binary edit: preserve legacy non-UTF8 comments and exact line endings.
+    with open(path, "rb") as src:
+        original = src.read()
+    data, hit = patch_hook_site(original, *PROMPT_TEXT_SITE)
+    if data != original:
+        with open(path, "wb") as dst:
+            dst.write(data)
+    return hit
+
+
 def patch_file(path):
     with open(path, "r", encoding="utf-8", errors="surrogateescape") as src:
         lines = src.readlines()
@@ -709,15 +765,22 @@ def main():
                         help="insert only byte-preserving loader-result observers")
     parser.add_argument("--mlaa-skip-only", action="store_true",
                         help="insert only the TJ_DISABLE_MLAA entry gate")
+    parser.add_argument("--prompts-only", action="store_true",
+                        help="insert only the PC key-prompt text hook (func_00198590)")
     args = parser.parse_args()
     if sum((args.vector_minmax_be_only, args.vector_compare_record_only,
             args.geometry_producer_trace_only, args.loader_result_trace_only,
-            args.mlaa_skip_only)) > 1:
+            args.mlaa_skip_only,
+            args.prompts_only)) > 1:
         parser.error("select only one targeted repair")
     files = sorted(glob.glob(RECOMP_GLOB))
     if not files:
         print("post_lift: no generated PPU sources -- run the lifter first", file=sys.stderr)
         return 1
+    if args.prompts_only:
+        found = sum(patch_prompt_text_file(path) for path in files)
+        print("post_lift: prompt-text %d/1 sites" % found)
+        return 0 if found == 1 else 1
     if args.mlaa_skip_only:
         found = sum(patch_mlaa_skip_file(path) for path in files)
         print("post_lift: mlaa-skip %d/1 sites" % found)
@@ -756,9 +819,12 @@ def main():
         done |= patch_file(path)
         if patch_mlaa_skip_file(path):
             done.add(MLAA_SKIP_ADDR)
+        if patch_prompt_text_file(path):
+            done.add(PROMPT_TEXT_MARK)
     want = set(CRT_SKIPS) | set(HEAP_PATCHES) | set(VRFIZ_PATCHES) | set(GEOMETRY_PRODUCER_SITES) | {TASK_WAKE_ADDR, TASK_SIGNAL_ADDR, COMPLETION_WAIT_ADDR, SCENE_STATE_ADDR,
         FADE_STATE_ADDR, NO_MEDIA_COMPLETE_ADDR, TITLE_STATE_ADDR,
-        TITLE_GATE_SCENE_KEY, TITLE_GATE_INPUT_KEY, MAIN_MENU_GATE_KEY, MLAA_SKIP_ADDR}
+        TITLE_GATE_SCENE_KEY, TITLE_GATE_INPUT_KEY, MAIN_MENU_GATE_KEY, MLAA_SKIP_ADDR,
+        PROMPT_TEXT_MARK}
     print("post_lift: %d/%d patches; vector-minmax-be %d patches" %
           (len(done), len(want), vector_minmax_changed))
     print("post_lift: vector-compare-record %d patches" % vector_compare_changed)
