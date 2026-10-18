@@ -37,15 +37,16 @@ Button prompts in the game's menus show your PC keys instead of PS3 buttons, and
 | Action | Keyboard | Controller |
 |--------|----------|------------|
 | Move | W A S D | Left stick |
-| Dodge | Numpad 8 / 2 / 4 / 6 | Right stick |
+| Dodge | Arrow keys | Right stick |
 | Jump | Space or Z | A |
-| Eat / mark / carry | X | B |
-| Claw attack | C | X |
+| Eat / mark / carry | F | B |
+| Claw attack | E | X |
 | Pack: fight / decoy | V | Y |
-| Creep / Bite | Q / E | LB / RB |
+| Creep / Bite | Left Ctrl / Left Shift | LB / RB |
+| Roar | Caps Lock | Right stick click |
 | Pack commands | 1 | LT |
 | Pause, map / Info | Enter / Backspace | Start / Back |
-| Items, menus | Arrow keys | D-pad |
+| Items, menus | Numpad 8 / 2 / 4 / 6 | D-pad |
 
 To quit, close the window. A save in progress finishes first.
 

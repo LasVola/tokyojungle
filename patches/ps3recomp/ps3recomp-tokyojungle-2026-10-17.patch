@@ -1857,7 +1857,7 @@ index 1dc2f95..2b47209 100644
  
      MousePortState* ms = &s_mouse_ports[port_no];
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
-index 2b7a175..d918674 100644
+index 2b7a175..8f387cf 100644
 --- a/libs/input/cellPad.c
 +++ b/libs/input/cellPad.c
 @@ -45,6 +45,14 @@
@@ -2193,12 +2193,12 @@ index 2b7a175..d918674 100644
 +static void pad_bindings_defaults(void)
 +{
 +    static const int keys[PAD_ACT_COUNT][PAD_KEYS_PER_ACT] = {
-+        {VK_SPACE, 'Z'}, {'X'}, {'C'}, {'V'},
-+        {'Q'}, {'E'}, {'1'}, {'3'}, {0}, {0},
++        {VK_SPACE, 'Z'}, {'F'}, {'E'}, {'V'},
++        {VK_LCONTROL}, {VK_LSHIFT}, {'1'}, {'3'}, {0}, {VK_CAPITAL},
 +        {VK_RETURN}, {VK_BACK},
-+        {VK_UP}, {VK_DOWN}, {VK_LEFT}, {VK_RIGHT},
-+        {'W'}, {'S'}, {'A'}, {'D'},
 +        {VK_NUMPAD8}, {VK_NUMPAD2}, {VK_NUMPAD4}, {VK_NUMPAD6},
++        {'W'}, {'S'}, {'A'}, {'D'},
++        {VK_UP}, {VK_DOWN}, {VK_LEFT}, {VK_RIGHT},
 +    };
 +    static const unsigned xi[PAD_ACT_RIGHT + 1] = {
 +        XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y,
@@ -3196,10 +3196,10 @@ index 2b7a175..d918674 100644
 +        return;
 +    }
 +
-+    /* Bindings from TJ_CONTROLS_FILE (defaults match the original fixed map:
-+     * Space/Z Cross, X Circle, C Square, V Triangle, Q/E L1/R1, 1/3 L2/R2,
-+     * Enter Start, Backspace Select, arrows D-pad, WASD left stick,
-+     * numpad 8/2/4/6 right stick). */
++    /* Bindings from TJ_CONTROLS_FILE (defaults: Space/Z Cross, F Circle,
++     * E Square, V Triangle, LCtrl/LShift L1/R1, 1/3 L2/R2, CapsLock R3,
++     * Enter Start, Backspace Select, numpad 8/2/4/6 D-pad, WASD left stick,
++     * arrows right stick). */
 +    unsigned prompt_down = 0;
 +    for (int a = 0; a < PAD_ACT_COUNT; a++) {
 +        int down = 0;

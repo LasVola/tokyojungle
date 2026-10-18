@@ -38,8 +38,8 @@ $vkNames = @{
 for ($c = 0x41; $c -le 0x5A; $c++) { $vkNames[$c] = [string][char]$c }
 for ($c = 0x30; $c -le 0x39; $c++) { $vkNames[$c] = [string][char]$c }
 for ($n = 0; $n -le 9; $n++) { $vkNames[0x60 + $n] = "Numpad$n" }
-# F1 is reserved: it opens the in-game Controls screen.
-for ($n = 2; $n -le 24; $n++) { $vkNames[0x70 + $n - 1] = "F$n" }
+# F1 (in-game Controls screen) and F2 are reserved; the game ignores them as bindings.
+for ($n = 3; $n -le 24; $n++) { $vkNames[0x70 + $n - 1] = "F$n" }
 $vkOrder = @($vkNames.Keys | Sort-Object)
 $mouseVk = @(0x01, 0x02, 0x04, 0x05, 0x06)
 # Generic modifiers are reported alongside the L/R ones; capture prefers the specific key.
@@ -50,10 +50,10 @@ $keyNameCanon = @{}
 foreach ($v in $vkNames.Values) { $keyNameCanon[$v.ToLower()] = $v }
 
 $defaults = @{
-    keyboard = @{ cross = 'Space, Z'; circle = 'X'; square = 'C'; triangle = 'V'; l1 = 'Q'; r1 = 'E'
-        l2 = '1'; r2 = '3'; l3 = ''; r3 = ''; start = 'Enter'; select = 'Backspace'; up = 'Up'; down = 'Down'
-        left = 'Left'; right = 'Right'; lstick_up = 'W'; lstick_down = 'S'; lstick_left = 'A'; lstick_right = 'D'
-        rstick_up = 'Numpad8'; rstick_down = 'Numpad2'; rstick_left = 'Numpad4'; rstick_right = 'Numpad6' }
+    keyboard = @{ cross = 'Space, Z'; circle = 'F'; square = 'E'; triangle = 'V'; l1 = 'LCtrl'; r1 = 'LShift'
+        l2 = '1'; r2 = '3'; l3 = ''; r3 = 'CapsLock'; start = 'Enter'; select = 'Backspace'; up = 'Numpad8'; down = 'Numpad2'
+        left = 'Numpad4'; right = 'Numpad6'; lstick_up = 'W'; lstick_down = 'S'; lstick_left = 'A'; lstick_right = 'D'
+        rstick_up = 'Up'; rstick_down = 'Down'; rstick_left = 'Left'; rstick_right = 'Right' }
     controller = @{ cross = 'A'; circle = 'B'; square = 'X'; triangle = 'Y'; l1 = 'LB'; r1 = 'RB'; l2 = 'LT'
         r2 = 'RT'; l3 = 'LS'; r3 = 'RS'; start = 'Start'; select = 'Back'; up = 'DpadUp'; down = 'DpadDown'
         left = 'DpadLeft'; right = 'DpadRight' }
