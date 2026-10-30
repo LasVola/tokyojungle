@@ -31,7 +31,10 @@ IMAGES = {
 
 
 def fnv1a64(data):
-    h = 0xCBF29CE484222325
+    # Same constants as runtime/spu/spu_workload.c (its offset basis is
+    # 1469598103934665603, one digit short of the textbook FNV basis; the
+    # registry fingerprints were computed with it).
+    h = 1469598103934665603
     for b in data:
         h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
     return h
