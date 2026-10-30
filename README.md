@@ -225,7 +225,7 @@ More: [docs/TESTING.md](docs/TESTING.md) (play-test log), [docs/HISTORY-2026-09.
 - **Original port and ps3recomp:** [sp00nznet](https://github.com/sp00nznet).
 - **Renderer, 60 FPS and 2K, pacing, stability and controls** (August–October 2026), play-tested
   by [LasVola](https://github.com/LasVola).
-- **Automatic build, launcher and build fixes:** Silvio Diaz.
+- **Automatic build, launcher and build fixes:** [Silvio Diaz](https://github.com/SilvioDiaz).
 - Movies are decoded with [FFmpeg](https://ffmpeg.org); decryption uses [RPCS3](https://rpcs3.net).
   Neither is included in this repository.
 

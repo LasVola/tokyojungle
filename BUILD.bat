@@ -9,7 +9,7 @@ rem    - o arquivo UP9000-NPUA80523_00-TOKYOJUNGLE00001.rap
 rem  e de dois cliques. No fim aparece o TokyoJungle.exe nesta pasta.
 rem ==========================================================================
 set "ROOT=%~dp0"
-set "REPO=https://github.com/SEU_USUARIO/tokyojungle.git"
+set "REPO=https://github.com/SilvioDiaz/tokyojungle.git"
 if defined TJ_REPO set "REPO=%TJ_REPO%"
 set "SRC=%ROOT%.build\tokyojungle"
 
