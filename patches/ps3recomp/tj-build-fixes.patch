@@ -378,3 +378,24 @@ index ae4d7b09..f02479aa 100644
                  return f"if ({cond}) {{ {_ied}SPU_RET(ctx); }}"
              return (f"if ({cond}) {{ {_ied}ctx->pc = {g(tgt_reg)}._u32[0]; "
                      f"g_spu_trampoline_fn = spu_indirect_branch; return; }}")
+diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
+index 36e346f..2d94926 100644
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -1051,10 +1051,14 @@ static s32 process_guest_file_op(const char* save_path, uint32_t set_ea)
+     return result;
+ }
+ 
++/* Any negative callback result, ERR_NODATA included, comes back as
++ * CELL_SAVEDATA_ERROR_CBRESULT on real hardware (RPCS3 does the same).
++ * Tokyo Jungle only runs its new-game setup (which unlocks the Pomeranian
++ * and Sika Deer) when AutoLoad2 returns 0x8002B401 on first boot; with
++ * ERROR_NODATA every Survival animal stays locked. */
+ static s32 callback_result_error(s32 result)
+ {
+-    if (result == CELL_SAVEDATA_CBRESULT_ERR_NODATA)
+-        return CELL_SAVEDATA_ERROR_NODATA;
++    (void)result;
+     return CELL_SAVEDATA_ERROR_CBRESULT;
+ }
+ 

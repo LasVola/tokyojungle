@@ -74,3 +74,7 @@ tools/launcher/*.exe
 tools/launcher/*.obj
 .build/
 build.log
+
+# Local saves, trophies and save backups (made from your game, never commit)
+gamedata/
+savedata-backup/
