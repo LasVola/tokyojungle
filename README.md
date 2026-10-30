@@ -50,6 +50,39 @@ Button prompts in the game's menus show your PC keys instead of PS3 buttons, and
 
 To quit, close the window. A save in progress finishes first.
 
+## Easy build (Windows, automatic)
+
+Put three things in one folder:
+
+- [`BUILD.bat`](BUILD.bat) from this repository
+- your extracted game folder (any name; it must contain `USRDIR\EBOOT.BIN` and `PARAM.SFO`)
+- your license file `UP9000-NPUA80523_00-TOKYOJUNGLE00001.rap`
+
+Double-click `BUILD.bat`. It installs what is missing with winget (Git, Python 3.11, CMake, Ninja,
+LLVM, Visual Studio 2022 Build Tools, FFmpeg), downloads ps3recomp and applies the patches,
+decrypts the game with your license through RPCS3 (an existing install is used, otherwise the
+portable build is downloaded from the official RPCS3 releases and checked by SHA-256), generates
+and compiles the code, and leaves `TokyoJungle.exe` in the folder. The first build takes
+30-60 minutes; everything is logged to `build.log`.
+
+`TokyoJungle.exe` asks for 1280x720 or 2560x1440 and window or full screen, and remembers the
+choice (hold Shift while starting it to change it again). Movies need FFmpeg next to the game,
+which the build copies in. The `.build` folder can be deleted afterwards.
+
+Extra steps this build performs that the manual steps below do not cover:
+
+- `patches/ps3recomp/tj-build-fixes.patch`: ps3recomp fixes from after the pinned commit
+  (find_functions call-target pass; SPU lifter `bi $rN` classification, non-r0 link returns and
+  `orbi`/`xorhi`/`xorbi` decoding, without which the player model renders as a spike;
+  `find_spu_functions --raw`), plus the first connected XInput pad as player 1 and full screen on
+  any monitor.
+- The 18 SPU images are inside `EBOOT.ELF`; `scripts/tj_extract_spu_images.py` cuts them out by
+  fingerprint and `scripts/tj_lift_spu.py` lifts them.
+- `scripts/tj_split_fixups.py` replaces `gen_stubs.py` for the lifter's split output.
+- `scripts/fix_import_slots.py` takes import names the NID database lacks from `src/main.cpp`
+  (without `cellSailPlayerInitialize2` the movies show a white screen).
+- `tj.edat` is replaced by its decrypted contents (the original is kept as `tj.edat.original`).
+
 ## Build and run
 
 You need Windows, CMake, Ninja, LLVM (clang-cl), Visual Studio 2022 Build Tools, Python 3.10+,

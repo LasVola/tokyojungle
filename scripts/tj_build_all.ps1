@@ -166,8 +166,11 @@ if ($needElf -or $needEdat) {
     Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $Dec '*')
     Copy-Item -LiteralPath (Join-Path $game.FullName 'USRDIR\EBOOT.BIN') -Destination $Dec
     if (Test-Path $edatBackup) { Copy-Item $edatBackup (Join-Path $Dec 'tj.edat') } else { Copy-Item $edat $Dec }
-    $p = Start-Process -FilePath $Rpcs3 -WorkingDirectory (Split-Path $Rpcs3) -Wait -PassThru -WindowStyle Hidden `
-        -ArgumentList @('--headless', '--decrypt', "`"$Dec\EBOOT.BIN`"", "`"$Dec\tj.edat`"")
+    # One file per call: RPCS3 decrypts only the first path it is given.
+    foreach ($f in @('EBOOT.BIN', 'tj.edat')) {
+        Start-Process -FilePath $Rpcs3 -WorkingDirectory (Split-Path $Rpcs3) -Wait -WindowStyle Hidden `
+            -ArgumentList @('--headless', '--decrypt', "`"$Dec\$f`"") | Out-Null
+    }
     $elf = Join-Path $Dec 'EBOOT.elf'
     if (-not (Test-Path $elf)) { Fail 'o RPCS3 nao descriptografou o EBOOT (o .rap e deste jogo?)' }
     if ((Get-FileHash $elf -Algorithm SHA256).Hash -ne $ElfSha) {
