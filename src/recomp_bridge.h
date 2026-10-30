@@ -376,7 +376,7 @@ extern const uint64_t   function_table_count;  /* entries, excluding sentinel */
  * Runtime HLE dispatch table — for dynamically registered HLE import handlers.
  * Checked before the compile-time dispatch table so HLE imports take priority.
  */
-#define HLE_DISPATCH_MAX 512
+#define HLE_DISPATCH_MAX 1024  /* 61 TJ + 182 generic + 311 routed = 554 > 512 */
 typedef struct {
     uint32_t guest_addr;
     recomp_func_t handler;

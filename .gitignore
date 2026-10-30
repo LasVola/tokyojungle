@@ -68,3 +68,9 @@ project/
 build-clang/
 run-logs/
 shader-cache/
+
+# Built launcher and automatic-build work files
+tools/launcher/*.exe
+tools/launcher/*.obj
+.build/
+build.log

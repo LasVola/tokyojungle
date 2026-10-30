@@ -1,0 +1,380 @@
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index 8f387cfb..b02b45f9 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -1554,6 +1554,23 @@ static void pad_poll_xinput(void)
+         s_host_state[i].press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
+     }
+ 
++    /* Single-player titles read only port 0, but Windows often puts the real
++     * controller in a later XInput slot (Steam Input's virtual pad, DS4Windows,
++     * third-party pads). When slot 0 is empty, the first connected slot becomes
++     * player 1 instead of being ignored. */
++    if (!s_host_state[0].connected) {
++        for (int j = 1; j < PAD_MAX_HOST_PORTS; j++) {
++            if (!s_host_state[j].connected) continue;
++            s_host_state[0] = s_host_state[j];
++            memset(&s_host_state[j], 0, sizeof(s_host_state[j]));
++            s_host_state[j].analog_lx = 128;
++            s_host_state[j].analog_ly = 128;
++            s_host_state[j].analog_rx = 128;
++            s_host_state[j].analog_ry = 128;
++            break;
++        }
++    }
++
+     pad_poll_keyboard();
+     pad_ovl_block_input();
+ }
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 885253b7..bcfc6bf8 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -4983,15 +4983,13 @@ static int d3d12_scale_borderless_rect(u32 width, u32 height, RECT* out)
+         fprintf(stderr, "[tj-scale] borderless: monitor query failed; windowed\n");
+         return 0;
+     }
++    /* Any monitor size: the window covers the whole monitor and DXGI
++     * (default DXGI_SCALING_STRETCH) stretches the internal swap chain to it. */
+     const LONG monitor_w = mi.rcMonitor.right - mi.rcMonitor.left;
+     const LONG monitor_h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+-    if (monitor_w != (LONG)width || monitor_h != (LONG)height) {
+-        fprintf(stderr, "[tj-scale] borderless needs a %ux%u monitor (primary is %ldx%ld); "
+-                "windowed\n", width, height, (long)monitor_w, (long)monitor_h);
+-        return 0;
+-    }
+     *out = mi.rcMonitor;
+-    fprintf(stderr, "[tj-scale] borderless %ux%u at %ld,%ld\n", width, height,
++    fprintf(stderr, "[tj-scale] borderless internal %ux%u on %ldx%ld monitor at %ld,%ld\n",
++            width, height, (long)monitor_w, (long)monitor_h,
+             (long)mi.rcMonitor.left, (long)mi.rcMonitor.top);
+     return 1;
+ }
+@@ -5060,9 +5058,13 @@ static HWND create_window(u32 width, u32 height, const char* title)
+      * sized to the internal resolution (or borderless on a monitor of exactly
+      * that size). The hidden test window keeps its style and gets no DPI call. */
+     const int scaled_window = s_d3d.scale > 1 && !background_test;
++    /* TJ_WINDOW_MODE=borderless also applies at 1x (full screen on any monitor). */
++    const char* window_mode = getenv("TJ_WINDOW_MODE");
++    const int want_borderless = !background_test && window_mode &&
++                                strcmp(window_mode, "borderless") == 0;
+     RECT monitor = {0};
+     int borderless = 0;
+-    if (scaled_window) {
++    if (scaled_window || want_borderless) {
+         d3d12_scale_dpi_awareness();
+         borderless = d3d12_scale_borderless_rect(width, height, &monitor);
+     }
+@@ -5072,6 +5074,10 @@ static HWND create_window(u32 width, u32 height, const char* title)
+     if (hidden_scaled) d3d12_scale_dpi_awareness();
+     const DWORD frame_style = borderless ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+     RECT wr = {0, 0, (LONG)width, (LONG)height};
++    if (borderless) {
++        wr.right = monitor.right - monitor.left;
++        wr.bottom = monitor.bottom - monitor.top;
++    }
+     AdjustWindowRect(&wr, frame_style, FALSE);
+ 
+     DWORD ex_style = background_test ? WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW : 0;
+diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
+index 52dc8181..82b692b8 100644
+--- a/runtime/spu/spu_context.h
++++ b/runtime/spu/spu_context.h
+@@ -720,6 +720,14 @@ void (*spu_take_interrupt(spu_context* ctx,
+         return;                                                \
+     } while (0)
+ 
++/* Host return through a NON-r0 link register. Sony's SPU compiler links
++ * leaf/helper calls through r4/r5/r6/r8/r78 (`brsl $r4, helper` ...
++ * `bi $r4`); SPU_RET would publish r0 as the return PC, which is not where
++ * the guest is going, and spu_drain_call's return-address check can then
++ * never match -- it restarts dispatch from r0's stale value instead. Same
++ * host-frame return as SPU_RET, publishing the register actually branched. */
++#define SPU_RET_REG(ctx, n) do {                                       (ctx)->pc = (ctx)->gpr[n]._u32[0];                             if ((ctx)->host_depth == 0)                                        g_spu_trampoline_fn = spu_indirect_branch;                 return;                                                    } while (0)
++
+ #ifdef __cplusplus
+ } /* extern "C" */
+ #endif
+diff --git a/tools/find_functions.py b/tools/find_functions.py
+index ce96e392..bd079a75 100644
+--- a/tools/find_functions.py
++++ b/tools/find_functions.py
+@@ -354,6 +354,65 @@ class FunctionFinder:
+         lo, hi = min(self.seeds), max(self.seeds)
+         return lambda addr: lo <= addr <= hi
+ 
++    def find_call_target_functions(self) -> None:
++        """Promote `bl` targets that no other pass found.
++
++        A `bl` from inside a detected function is a CALL, and its target is by
++        definition a function entry -- a stronger signal than any prologue
++        heuristic. The branch-target pass deliberately skips `bl` (it hunts
++        basic blocks, and uses call targets only as a gate), so a function that
++        is reached solely by call and has no recognizable prologue was never
++        promoted at all.
++
++        PLT/import stubs are exactly that shape:
++
++            li r12,0 ; oris r12,r12,hi ; lwz r12,lo(r12)
++            std r2,40(r1) ; lwz r0,0(r12) ; lwz r2,4(r12) ; mtctr r0 ; bctr
++
++        No mflr, no stdu, not in .opd, never a `b` target. Tokyo Jungle has 318
++        of them behind 854 call sites; without this pass the lifter emits
++        `/* bl -> non-code 0x... */` for every one and the guest silently
++        skips every library call it makes.
++
++        Sources are filtered to covered addresses for the same reason the
++        branch-target pass does it: executable segments carry read-only data,
++        and data decoded as instructions yields phantom call targets.
++        """
++        covered = self._coverage_fn()
++
++        targets: set[int] = set()
++        for insn in self.instructions:
++            if not _is_bl(insn) or not covered(insn.addr):
++                continue
++            t = _bl_target(insn)
++            if t is not None and not covered(t) and t not in self.functions:
++                targets.add(t)
++
++        for target in sorted(targets):
++            end = self._basic_block_end(target)
++            if end > target:
++                self.functions[target] = Function(start=target, end=end)
++
++    def _basic_block_end(self, addr: int) -> int:
++        """End of the straight-line run starting at addr, stopping after the
++        first unconditional transfer (blr/bctr/b/rfid) or at the next known
++        function start. Used to size a call target no other pass bounded."""
++        idx = self._addr_to_idx.get(addr)
++        if idx is None:
++            return addr
++        starts = self.functions
++        limit = len(self.instructions)
++        i = idx
++        while i < limit:
++            insn = self.instructions[i]
++            if i > idx and insn.addr in starts:
++                return insn.addr
++            mn = insn.mnemonic
++            if mn in ("blr", "bctr", "b", "blrl", "rfid"):
++                return insn.addr + 4
++            i += 1
++        return self.instructions[limit - 1].addr + 4
++
+     def find_branch_target_functions(self) -> None:
+         """Third pass: find branch targets that fall outside known function boundaries.
+ 
+@@ -632,6 +691,13 @@ class FunctionFinder:
+         _note(f"extent pass: {grown} functions grown over their basic blocks "
+               f"({time.time() - t:.1f}s)")
+ 
++        t = time.time()
++        before = len(self.functions)
++        self.find_call_target_functions()
++        _note(f"call-target pass: +{len(self.functions) - before} bl targets "
++              f"no other pass found -> {len(self.functions)} "
++              f"({time.time() - t:.1f}s)")
++
+         t = time.time()
+         self.find_branch_target_functions()
+         _note(f"branch-target pass: {len(self.functions)} functions "
+diff --git a/tools/find_spu_functions.py b/tools/find_spu_functions.py
+index 1233d58d..af16afd8 100644
+--- a/tools/find_spu_functions.py
++++ b/tools/find_spu_functions.py
+@@ -117,7 +117,13 @@ def read_symbols(buf, shs):
+             continue
+         strtab = shs[sh["link"]] if 0 <= sh["link"] < len(shs) else None
+         strbuf = buf[strtab["off"]:strtab["off"] + strtab["size"]] if strtab else b""
+-        for i in range(sh["size"] // sh["entsize"]):
++        if sh["entsize"] <= 0:
++            continue
++        # An image carved out of a bigger binary (extract_spu_images.py sizes it
++        # by the PT_LOAD / section-table extent) can carry a symtab header whose
++        # data runs past the carved bytes. Truncate to what we actually have.
++        avail = max(0, len(buf) - sh["off"]) // sh["entsize"]
++        for i in range(min(sh["size"] // sh["entsize"], avail)):
+             off = sh["off"] + i * sh["entsize"]
+             st_name, st_value, st_size, st_info, st_other, st_shndx = \
+                 struct.unpack_from(">IIIBBH", buf, off)
+@@ -131,6 +137,20 @@ def read_symbols(buf, shs):
+     return funcs
+ 
+ 
++def text_image(buf, phs):
++    """(bytes, vaddr) spanning EVERY executable PT_LOAD segment, gaps zeroed.
++    Some task ELFs carry a second PF_X segment (TM level-load task: 0x34B00,
++    called from the main text); lifting only the first left it as stubs."""
++    xs = [ph for ph in phs if ph["type"] == 1 and (ph["flags"] & 1)]
++    if not xs:
++        raise SystemExit("No executable PT_LOAD segment found")
++    lo = min(ph["vaddr"] for ph in xs)
++    img = bytearray(max(ph["vaddr"] + ph["filesz"] for ph in xs) - lo)
++    for ph in xs:
++        img[ph["vaddr"] - lo:ph["vaddr"] - lo + ph["filesz"]] = buf[ph["off"]:ph["off"] + ph["filesz"]]
++    return bytes(img), lo
++
++
+ def pick_text(phs):
+     """Return (file_off, vaddr, size) of the executable PT_LOAD segment."""
+     for ph in phs:
+@@ -540,6 +560,18 @@ _TERMINATORS_NO_FALLTHROUGH = {
+ }
+ 
+ 
++# lv2 SPU-thread syscalls made with stop-and-signal. The kernel services them
++# and RESUMES the SPU at the next instruction, which reads the reply from the
++# inbound mailbox (sys_spu_thread_receive_event: stop 0x110, then rdch x4).
++# Ending the function at the stop dropped that reply-handling code from the
++# lift entirely. 0x101/0x102 (group/thread exit) really are terminal.
++LV2_RESUMING_STOPS = {0x100, 0x110, 0x111}
++
++
++def is_resuming_stop(ins):
++    return ins.mnemonic == "stop" and (ins.raw & 0x3FFF) in LV2_RESUMING_STOPS
++
++
+ def is_return(ins):
+     """SPU ABI: `bi $r0` is the standard return."""
+     if ins.mnemonic != "bi":
+@@ -563,7 +595,7 @@ def find_end(start, insns_by_addr, sorted_starts, code_end):
+             break
+         if is_return(ins):
+             return pc + 4
+-        if ins.mnemonic in _TERMINATORS_NO_FALLTHROUGH:
++        if ins.mnemonic in _TERMINATORS_NO_FALLTHROUGH and not is_resuming_stop(ins):
+             # Unconditional control flow -- if the target is not within this
+             # range, the function ends here.
+             return pc + 4
+@@ -573,10 +605,26 @@ def find_end(start, insns_by_addr, sorted_starts, code_end):
+     return min(next_start, code_end)
+ 
+ 
+-def detect_functions(buf, base_override=None, verbose=True):
+-    elf = parse_elf(buf)
+-    text_off, text_va, text_size = pick_text(elf["phs"])
+-    code = buf[text_off:text_off + text_size]
++def detect_functions(buf, base_override=None, verbose=True, raw=False):
++    if raw:
++        # A raw local-store image: a SPURS job binary, which the title loads
++        # from its own data files as a flat code+data blob rather than as an
++        # embedded ELF. There is no program header, no entry field and no
++        # symbol table -- the whole file is .text at `base`, and every seed has
++        # to come from the branch/call analysis below. Discovered via
++        # spu_workload's SPU_DUMP_MISS, which is the only place these bytes
++        # exist in one piece.
++        base = base_override if base_override is not None else 0
++        elf = {"entry": base, "phs": [{"type": 1, "flags": 1, "off": 0,
++                                       "vaddr": base, "filesz": len(buf),
++                                       "memsz": len(buf)}], "shs": []}
++        text_off, text_va, text_size = 0, base, len(buf)
++    else:
++        elf = parse_elf(buf)
++        text_off, text_va, _ = pick_text(elf["phs"])
++        code, text_va = text_image(buf, elf["phs"])
++    if raw:
++        code = buf[text_off:text_off + text_size]
+     base = base_override if base_override is not None else text_va
+     insns = disassemble_spu(code, base_addr=base)
+     insns_by_addr = {ins.addr: ins for ins in insns}
+@@ -584,7 +632,7 @@ def detect_functions(buf, base_override=None, verbose=True):
+     code_end   = base + len(code)
+ 
+     # ---- seeds ----
+-    syms = read_symbols(buf, elf["shs"])
++    syms = read_symbols(buf, elf["shs"]) if elf["shs"] else []
+     seed_starts = set()
+     sized_funcs = []   # (start, end) from symbols with non-zero size
+ 
+@@ -674,6 +722,10 @@ def main():
+     p.add_argument("--code-out", default=None,
+                    help="Also write the raw .text bytes here (for "
+                         "`spu_lifter.py --base <va>`)")
++    p.add_argument("--raw", action="store_true",
++                   help="input is a raw local-store image (a SPURS job blob), "
++                        "not an ELF: no phdrs, no symbols, so every seed comes "
++                        "from the branch analysis")
+     p.add_argument("--base", type=lambda x: int(x, 0), default=None,
+                    help="Override the .text base address")
+     args = p.parse_args()
+@@ -681,7 +733,7 @@ def main():
+     with open(args.input, "rb") as f:
+         buf = f.read()
+ 
+-    funcs, (text_off, base, size) = detect_functions(buf, args.base)
++    funcs, (text_off, base, size) = detect_functions(buf, args.base, raw=args.raw)
+ 
+     out_obj = [{"start": s, "end": e} for s, e in funcs]
+     if args.out:
+diff --git a/tools/spu_disasm.py b/tools/spu_disasm.py
+index 26303525..0dff5394 100644
+--- a/tools/spu_disasm.py
++++ b/tools/spu_disasm.py
+@@ -144,9 +144,12 @@ RI10_TABLE: dict[int, str] = {
+     0b00010100: "andi",   # and word immediate
+     0b00000100: "ori",    # or word immediate
+     0b00000101: "orhi",   # or halfword immediate            (op8 0x05)
++    0b00000110: "orbi",   # or byte immediate                (op8 0x06)
+     0b00010101: "andhi",  # and halfword immediate           (op8 0x15)
+     0b00010110: "andbi",  # and byte immediate               (op8 0x16)
+     0b01000100: "xori",   # xor word immediate
++    0b01000101: "xorhi",  # xor halfword immediate           (op8 0x45)
++    0b01000110: "xorbi",  # xor byte immediate               (op8 0x46)
+     0b01111100: "ceqi",   # compare equal word immediate
+     0b01111101: "ceqhi",  # compare equal halfword immediate
+     0b01111110: "ceqbi",  # compare equal byte immediate
+diff --git a/tools/spu_lifter.py b/tools/spu_lifter.py
+index ae4d7b09..f02479aa 100644
+--- a/tools/spu_lifter.py
++++ b/tools/spu_lifter.py
+@@ -402,12 +402,25 @@ def compute_link_returns(insns, bounds) -> set:
+             # move), the target was computed here -> a real indirect branch, not
+             # a return. Scan stops at unconditional flow breaks (block boundary
+             # -- see the twin guard in compute_bi_r0_jumps).
++            # Scan the real BASIC BLOCK, not the enclosing lifted function.
++            # The two are not the same: the lifter splits long straight-line
++            # runs into several functions that chain by fallthrough, and a scan
++            # bounded by `fn` stops at a split that is not a control-flow edge
++            # at all. pm_wwsjob's command-dispatch prologue is exactly that --
++            # one 0x7C-byte block cut into five functions (0x2DF8, 0x2E18,
++            # 0x2E38, 0x2E60, 0x2E78) -- so the `bi $r6` at 0x2E74 was examined
++            # against the four instructions of 0x2E60..0x2E78 alone. Its
++            # predecessor, the `br 0x2DF8` that loads r6 from the LS 0x15B0
++            # handler table, enters the block far above that window and was
++            # invisible, so the guard below could not fire and every job
++            # command handler was skipped -- the very case its comment cites.
+             written = False
+             block_start = s
+-            for j in range(idx - 1, -1, -1):
+-                w = fn[j]
++            gi = idx_of_all[insn.addr]
++            for j in range(gi - 1, -1, -1):
++                w = ordered[j]
+                 if w.mnemonic in ("bi", "br", "bra", "iret", "stop", "stopd"):
+-                    block_start = fn[j + 1].addr if j + 1 <= idx else s
++                    block_start = ordered[j + 1].addr
+                     break
+                 if (w.mnemonic not in _NO_RT_WRITE and _dest_reg(w) == rn
+                         and not _is_identity_move(w)):
+@@ -875,6 +888,11 @@ class SPULifter:
+                     or addr in self.link_return:
+                 # SPU_RET: host return while a matched brsl frame is live
+                 # (host_depth>0); at 0 the frame was destroyed -> dispatch to r0.
++                # A return through a NON-r0 link (compute_link_returns) must
++                # publish THAT register as the return PC: SPU_RET publishes r0,
++                # and spu_drain_call restarts dispatch when pc != return_pc.
++                if tgt_reg != "0":
++                    return f"{_ied}SPU_RET_REG(ctx, {tgt_reg});"
+                 return f"{_ied}SPU_RET(ctx);"
+             # Computed indirect tail: set pc + trampoline to the dispatcher, unwind.
+             return (f"{_ied}ctx->pc = {g(tgt_reg)}._u32[0]; "
+@@ -919,6 +937,8 @@ class SPULifter:
+             # land on an unregistered mid-function PC.
+             if (tgt_reg == "0" and addr not in self.bi_r0_jump) \
+                     or addr in self.link_return:
++                if tgt_reg != "0":
++                    return f"if ({cond}) {{ {_ied}SPU_RET_REG(ctx, {tgt_reg}); }}"
+                 return f"if ({cond}) {{ {_ied}SPU_RET(ctx); }}"
+             return (f"if ({cond}) {{ {_ied}ctx->pc = {g(tgt_reg)}._u32[0]; "
+                     f"g_spu_trampoline_fn = spu_indirect_branch; return; }}")
