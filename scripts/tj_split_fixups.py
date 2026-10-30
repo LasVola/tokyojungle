@@ -26,7 +26,7 @@ MARK = "/* MSVC compatibility helpers */\n"
 
 
 def strip_preamble(path):
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8", errors="surrogateescape")
     start = text.find(MARK)
     if start < 0:
         return 0
@@ -42,7 +42,7 @@ def strip_preamble(path):
             depth -= 1
             if depth == 0:
                 break
-    path.write_text(text[:start] + "/* MSVC helpers stripped -- provided by recomp_bridge.h */\n"
+    path.write_text(encoding="utf-8", errors="surrogateescape", data=text[:start] + "/* MSVC helpers stripped -- provided by recomp_bridge.h */\n"
                     + "\n".join(lines[end + 1:]))
     return 1
 
@@ -53,7 +53,7 @@ def main():
         sys.exit("no generated/ppu_recomp_*.cpp; run scripts/analyze.py first")
     referenced = set(CRT_OVERRIDES)
     for shard in shards:
-        referenced |= set(re.findall(r"\b(func_[0-9A-Fa-f]+)\b", shard.read_text()))
+        referenced |= set(re.findall(r"\b(func_[0-9A-Fa-f]+)\b", shard.read_text(encoding="utf-8", errors="surrogateescape")))
     decls = "\n".join(f"void {fn}(ppu_context* ctx);" for fn in sorted(referenced))
     (GEN / "ppu_recomp.h").write_text(
         '/* Patched header */\n#pragma once\n#include "recomp_bridge.h"\n\n'
