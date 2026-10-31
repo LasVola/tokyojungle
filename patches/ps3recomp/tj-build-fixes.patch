@@ -399,3 +399,230 @@ index 36e346f..2d94926 100644
      return CELL_SAVEDATA_ERROR_CBRESULT;
  }
  
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -327,6 +327,52 @@ static IAudioClient*        s_wasapi_client = NULL;
+ static IAudioRenderClient*  s_wasapi_render = NULL;
+ static HANDLE               s_wasapi_event  = NULL;
+ static UINT32               s_wasapi_buf_frames = 0;
++/* Endpoint the stream was opened on, and whether it has failed since. Windows
++ * invalidates the stream when the output device resets (HDMI/monitor audio
++ * renegotiating on a display mode change, sleep, a headset plugged in, the
++ * default device switched). Without reopening, sound stays off for the rest
++ * of the session. */
++static wchar_t              s_wasapi_device_id[256];
++static int                  s_wasapi_lost = 0;
++static DWORD                s_wasapi_last_check = 0;
++
++#ifndef AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
++#define AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM 0x80000000
++#endif
++#ifndef AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
++#define AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY 0x08000000
++#endif
++
++static void audio_wasapi_mark_lost(const char* what, HRESULT hr)
++{
++    if (!s_wasapi_lost)
++        fprintf(stderr, "[cellAudio] output stream lost (%s hr=0x%08lX), reopening\n",
++                what, (unsigned long)hr);
++    s_wasapi_lost = 1;
++}
++
++/* Reads the current default render endpoint ID into out. Returns 0 on success. */
++static int audio_wasapi_default_id(wchar_t* out, size_t cap)
++{
++    IMMDeviceEnumerator* enumerator = NULL;
++    IMMDevice* device = NULL;
++    LPWSTR id = NULL;
++    out[0] = 0;
++    if (FAILED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
++                                &IID_IMMDeviceEnumerator, (void**)&enumerator)))
++        return -1;
++    HRESULT hr = enumerator->lpVtbl->GetDefaultAudioEndpoint(enumerator, eRender,
++                                                             eConsole, &device);
++    enumerator->lpVtbl->Release(enumerator);
++    if (FAILED(hr)) return -1;
++    hr = device->lpVtbl->GetId(device, &id);
++    device->lpVtbl->Release(device);
++    if (FAILED(hr) || !id) return -1;
++    wcsncpy(out, id, cap - 1);
++    out[cap - 1] = 0;
++    CoTaskMemFree(id);
++    return 0;
++}
+ 
+ static int audio_backend_init(void)
+ {
+@@ -354,6 +400,15 @@ static int audio_backend_init(void)
+         printf("[cellAudio] Failed to get default audio endpoint: 0x%08lX\n", hr);
+         return -1;
+     }
++    {
++        LPWSTR id = NULL;
++        s_wasapi_device_id[0] = 0;
++        if (SUCCEEDED(device->lpVtbl->GetId(device, &id)) && id) {
++            wcsncpy(s_wasapi_device_id, id, 255);
++            s_wasapi_device_id[255] = 0;
++            CoTaskMemFree(id);
++        }
++    }
+ 
+     hr = device->lpVtbl->Activate(device, &IID_IAudioClient, CLSCTX_ALL,
+                                    NULL, (void**)&s_wasapi_client);
+@@ -387,21 +442,43 @@ static int audio_backend_init(void)
+     }
+     s_wasapi_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+ 
++    /* AUTOCONVERTPCM lets Windows resample when the device does not run at
++     * 48 kHz float (44.1 kHz headsets, some HDMI outputs). */
++    const DWORD convert = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
++                          AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+     hr = s_wasapi_client->lpVtbl->Initialize(
+         s_wasapi_client,
+         AUDCLNT_SHAREMODE_SHARED,
+-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
++        AUDCLNT_STREAMFLAGS_EVENTCALLBACK | convert,
+         buf_duration, 0, &wfx, NULL);
+ 
+     if (FAILED(hr)) {
+-        /* Fallback: try without event callback */
+-        hr = s_wasapi_client->lpVtbl->Initialize(
+-            s_wasapi_client,
+-            AUDCLNT_SHAREMODE_SHARED,
+-            0, buf_duration, 0, &wfx, NULL);
++        /* Fallback: try without event callback. A failed Initialize leaves
++         * the client unusable, so activate a fresh one first. */
++        s_wasapi_client->lpVtbl->Release(s_wasapi_client);
++        s_wasapi_client = NULL;
++        IMMDeviceEnumerator* en2 = NULL;
++        IMMDevice* dev2 = NULL;
++        hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
++                              &IID_IMMDeviceEnumerator, (void**)&en2);
++        if (SUCCEEDED(hr)) {
++            hr = en2->lpVtbl->GetDefaultAudioEndpoint(en2, eRender, eConsole, &dev2);
++            en2->lpVtbl->Release(en2);
++        }
++        if (SUCCEEDED(hr)) {
++            hr = dev2->lpVtbl->Activate(dev2, &IID_IAudioClient, CLSCTX_ALL,
++                                        NULL, (void**)&s_wasapi_client);
++            dev2->lpVtbl->Release(dev2);
++        }
++        if (SUCCEEDED(hr))
++            hr = s_wasapi_client->lpVtbl->Initialize(
++                s_wasapi_client,
++                AUDCLNT_SHAREMODE_SHARED,
++                convert, buf_duration, 0, &wfx, NULL);
+         if (FAILED(hr)) {
+             printf("[cellAudio] WASAPI Initialize failed: 0x%08lX\n", hr);
+-            s_wasapi_client->lpVtbl->Release(s_wasapi_client);
++            if (s_wasapi_client)
++                s_wasapi_client->lpVtbl->Release(s_wasapi_client);
+             s_wasapi_client = NULL;
+             CloseHandle(s_wasapi_event);
+             s_wasapi_event = NULL;
+@@ -449,10 +526,14 @@ static void audio_backend_shutdown(void)
+ 
+ static void audio_backend_submit(const float* stereo_samples, u32 num_samples)
+ {
+-    if (!s_wasapi_render) return;
++    if (!s_wasapi_render || s_wasapi_lost) return;
+ 
+     UINT32 padding = 0;
+-    s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding);
++    HRESULT hr = s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding);
++    if (FAILED(hr)) {
++        audio_wasapi_mark_lost("GetCurrentPadding", hr);
++        return;
++    }
+ 
+     UINT32 available = s_wasapi_buf_frames - padding;
+     if (num_samples > available)
+@@ -461,10 +542,12 @@ static void audio_backend_submit(const float* stereo_samples, u32 num_samples)
+     if (num_samples == 0) return;
+ 
+     BYTE* buf = NULL;
+-    HRESULT hr = s_wasapi_render->lpVtbl->GetBuffer(s_wasapi_render, num_samples, &buf);
++    hr = s_wasapi_render->lpVtbl->GetBuffer(s_wasapi_render, num_samples, &buf);
+     if (SUCCEEDED(hr) && buf) {
+         memcpy(buf, stereo_samples, num_samples * 2 * sizeof(float));
+         s_wasapi_render->lpVtbl->ReleaseBuffer(s_wasapi_render, num_samples, 0);
++    } else if (FAILED(hr)) {
++        audio_wasapi_mark_lost("GetBuffer", hr);
+     }
+ }
+ 
+@@ -472,15 +555,57 @@ static u32 audio_backend_queued_samples(void)
+ {
+     if (!s_wasapi_client) return UINT32_MAX;
+     UINT32 padding = 0;
+-    if (FAILED(s_wasapi_client->lpVtbl->GetCurrentPadding(
+-            s_wasapi_client, &padding)))
++    HRESULT hr = s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding);
++    if (FAILED(hr)) {
++        audio_wasapi_mark_lost("GetCurrentPadding", hr);
+         return UINT32_MAX;
++    }
+     return padding;
+ }
+ 
++/* Runs on the mixer thread, the only user of the stream while it runs.
++ * Reopens the stream when it failed, when the Windows default output device
++ * changed, or (every 2 s) when the first open found no device. */
++static void audio_wasapi_check_device(void)
++{
++    DWORD now = GetTickCount();
++    int reopen = s_wasapi_lost;
++    if (!reopen && now - s_wasapi_last_check >= 1000) {
++        s_wasapi_last_check = now;
++        if (!s_wasapi_client) {
++            reopen = 1;
++        } else {
++            wchar_t id[256];
++            if (audio_wasapi_default_id(id, 256) == 0 &&
++                wcscmp(id, s_wasapi_device_id) != 0) {
++                fprintf(stderr, "[cellAudio] default output device changed, reopening\n");
++                reopen = 1;
++            }
++        }
++    }
++    if (!reopen) return;
++
++    static DWORD last_attempt = 0;
++    if (last_attempt && now - last_attempt < 2000) return;
++    last_attempt = now;
++
++    audio_backend_shutdown();
++    s_wasapi_lost = 0;
++    if (audio_backend_init() == 0) {
++        fprintf(stderr, "[cellAudio] output stream reopened (%u frames)\n",
++                (unsigned)s_wasapi_buf_frames);
++        last_attempt = 0;
++    } else {
++        /* Nothing to play on yet: retry later, keep the mixer running. */
++        audio_backend_shutdown();
++    }
++}
++
+ static int audio_backend_wait_for_block_slot(void)
+ {
+-    if (!s_wasapi_client || !s_wasapi_render) {
++    audio_wasapi_check_device();
++
++    if (!s_wasapi_client || !s_wasapi_render || s_wasapi_lost) {
+         static unsigned fallback_phase = 0;
+         Sleep((fallback_phase++ % 3) == 2 ? 6 : 5);
+         return s_mix_thread_running != 0;
+@@ -488,6 +613,11 @@ static int audio_backend_wait_for_block_slot(void)
+ 
+     while (s_mix_thread_running) {
+         u32 padding = audio_backend_queued_samples();
++        if (s_wasapi_lost) {
++            /* Keep the guest's audio clock moving; reopen on the next block. */
++            Sleep(5);
++            return 1;
++        }
+         if (ps3_audio_full_block_fits(s_wasapi_buf_frames, padding))
+             return 1;
+ 

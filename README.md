@@ -166,8 +166,11 @@ newer ps3recomp tools and steps than the README listed. This fork scripts all of
 - `patches/ps3recomp/tj-build-fixes.patch`: ps3recomp fixes from after the pinned commit —
   the find_functions call-target pass; the SPU lifter's `bi $rN` classification, non-r0 link
   returns and `orbi`/`xorhi`/`xorbi` decoding (without it the player model renders as a spike);
-  `find_spu_functions --raw` — plus the first connected XInput pad as player 1 and full screen on
-  any monitor.
+  `find_spu_functions --raw` — plus the first connected XInput pad as player 1, full screen on
+  any monitor, the real-hardware save-data callback error (new saves unlock the first Survival
+  animals) and audio that reopens the Windows output when the device resets or changes.
+- `src/tj_font_queue.cpp` (hook added by `scripts/post_lift.py`): the game's text thread could
+  miss a request and leave old words on map labels; it now draws any request still queued.
 - `scripts/tj_extract_spu_images.py`: the 18 SPU programs are inside `EBOOT.ELF`; they are cut out
   by fingerprint (no run-time capture needed). `scripts/tj_lift_spu.py` lifts them.
 - `scripts/tj_split_fixups.py`: the parts of `gen_stubs.py` that still matter, for the lifter's
