@@ -53,6 +53,14 @@ function Winget-Install($id, $extra) {
     & winget @wargs *>&1 | ForEach-Object { "$_" } | Add-Content -LiteralPath $Log
     Refresh-Path
 }
+function Find-7Zip {
+    foreach ($c in @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe")) {
+        if (Test-Path $c) { return $c }
+    }
+    $cmd = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
 function Find-WingetExe($pattern, $exe) {
     $pkgs = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
     Get-ChildItem -Path $pkgs -Directory -Filter $pattern -ErrorAction SilentlyContinue |
@@ -157,7 +165,15 @@ if ($needElf -or $needEdat) {
         }
         $dir = Join-Path $Work 'rpcs3'
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        Run 'extrair RPCS3' { tar.exe -xf $archive -C $dir }
+        # Windows' own tar opens this .7z only on recent builds; older Windows 10
+        # fails with "LZMA codec is unsupported". Then use 7-Zip (installed if missing).
+        & tar.exe -xf $archive -C $dir *>&1 | ForEach-Object { "$_" } | Add-Content -LiteralPath $Log
+        if ($LASTEXITCODE -or -not (Test-Path (Join-Path $dir 'rpcs3.exe'))) {
+            $sevenZip = Find-7Zip
+            if (-not $sevenZip) { Winget-Install '7zip.7zip' @(); $sevenZip = Find-7Zip }
+            if (-not $sevenZip) { Fail 'nao consegui extrair o RPCS3: instale o 7-Zip (https://7-zip.org) e rode o BUILD.bat de novo' }
+            Run 'extrair RPCS3 (7-Zip)' { & $sevenZip x -y "-o$dir" $archive }
+        }
         $Rpcs3 = Join-Path $dir 'rpcs3.exe'
     }
     $exdata = Join-Path (Split-Path $Rpcs3) 'dev_hdd0\home\00000001\exdata'
