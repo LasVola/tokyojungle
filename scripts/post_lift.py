@@ -320,6 +320,43 @@ def patch_prompt_text_file(path):
     return hit
 
 
+# Text worker lost wake-up (src/tj_font_queue.cpp). After PFontThread's loop
+# (func_001C0540) sets busy = 0, draw any request queued in the meantime
+# instead of sleeping on it (map labels kept stale text).
+FONT_QUEUE_SITE = (
+    "001C0540", b"vm_write32(ctx->gpr[30] + 0x790, ctx->gpr[31]);", False,
+    "tj-font-requeue", (
+        "        { extern int tj_font_requests_pending(uint32_t);",
+        "          if (tj_font_requests_pending((uint32_t)ctx->gpr[30])) {",
+        "              vm_write32(ctx->gpr[30] + 0x790, 1);",
+        "              ctx->gpr[3] = ctx->gpr[30];",
+        "              goto loc_001C05C4; } }",
+    ))
+FONT_QUEUE_MARK = FONT_QUEUE_SITE[3]
+# Safety net for the producer's own window (it reads busy before it marks the
+# slot queued): wait on the worker's event flag with a 20 ms timeout instead of
+# forever. On timeout the result is the cleared pattern (0), so the worker
+# scans its slots once and goes back to sleep.
+FONT_QUEUE_POLL_SITE = (
+    "001C0540", b"ctx->gpr[11] = (int64_t)(int32_t)(0x55);", True,
+    "tj-font-poll", (
+        "        ctx->gpr[7] = 20000;",
+    ))
+
+
+def patch_font_queue_file(path):
+    """Insert the text-worker requeue check in func_001C0540."""
+    with open(path, "rb") as src:
+        original = src.read()
+    data, hit = patch_hook_site(original, *FONT_QUEUE_SITE)
+    if hit:
+        data, _ = patch_hook_site(data, *FONT_QUEUE_POLL_SITE)
+    if data != original:
+        with open(path, "wb") as dst:
+            dst.write(data)
+    return hit
+
+
 def patch_file(path):
     with open(path, "r", encoding="utf-8", errors="surrogateescape") as src:
         lines = src.readlines()
@@ -767,16 +804,22 @@ def main():
                         help="insert only the TJ_DISABLE_MLAA entry gate")
     parser.add_argument("--prompts-only", action="store_true",
                         help="insert only the PC key-prompt text hook (func_00198590)")
+    parser.add_argument("--font-queue-only", action="store_true",
+                        help="insert only the text-worker requeue check (func_001C0540)")
     args = parser.parse_args()
     if sum((args.vector_minmax_be_only, args.vector_compare_record_only,
             args.geometry_producer_trace_only, args.loader_result_trace_only,
             args.mlaa_skip_only,
-            args.prompts_only)) > 1:
+            args.prompts_only, args.font_queue_only)) > 1:
         parser.error("select only one targeted repair")
     files = sorted(glob.glob(RECOMP_GLOB))
     if not files:
         print("post_lift: no generated PPU sources -- run the lifter first", file=sys.stderr)
         return 1
+    if args.font_queue_only:
+        found = sum(patch_font_queue_file(path) for path in files)
+        print("post_lift: font-requeue %d/1 sites" % found)
+        return 0 if found == 1 else 1
     if args.prompts_only:
         found = sum(patch_prompt_text_file(path) for path in files)
         print("post_lift: prompt-text %d/1 sites" % found)
@@ -821,10 +864,12 @@ def main():
             done.add(MLAA_SKIP_ADDR)
         if patch_prompt_text_file(path):
             done.add(PROMPT_TEXT_MARK)
+        if patch_font_queue_file(path):
+            done.add(FONT_QUEUE_MARK)
     want = set(CRT_SKIPS) | set(HEAP_PATCHES) | set(VRFIZ_PATCHES) | set(GEOMETRY_PRODUCER_SITES) | {TASK_WAKE_ADDR, TASK_SIGNAL_ADDR, COMPLETION_WAIT_ADDR, SCENE_STATE_ADDR,
         FADE_STATE_ADDR, NO_MEDIA_COMPLETE_ADDR, TITLE_STATE_ADDR,
         TITLE_GATE_SCENE_KEY, TITLE_GATE_INPUT_KEY, MAIN_MENU_GATE_KEY, MLAA_SKIP_ADDR,
-        PROMPT_TEXT_MARK}
+        PROMPT_TEXT_MARK, FONT_QUEUE_MARK}
     print("post_lift: %d/%d patches; vector-minmax-be %d patches" %
           (len(done), len(want), vector_minmax_changed))
     print("post_lift: vector-compare-record %d patches" % vector_compare_changed)

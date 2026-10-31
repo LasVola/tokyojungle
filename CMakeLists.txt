@@ -284,6 +284,7 @@ add_executable(tokyojungle
     src/dispatch_glue.cpp
     src/tj_crt_overrides.cpp
     src/tj_prompt_text.cpp        # PC key names in game text (post_lift hook)
+    src/tj_font_queue.cpp         # text worker lost wake-up (post_lift hook)
     src/tj_pamf_media.cpp
     src/tj_present.cpp
     src/tj_gcm_interrupt.cpp
